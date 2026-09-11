@@ -344,7 +344,7 @@ test("role provenance bundles bind exact selected bytes and reject silent trunca
   const bundle = createRoleContextBundle([item], [{ source: "large-source.txt", reason: "Optional source excerpt exceeded the bounded relevance selection." }]);
   assert.equal(validateRoleContextBundle(bundle).bundleRevision, bundle.bundleRevision);
   assert.throws(() => validateRoleContextBundle({ ...bundle, items: [{ ...item, content: `${content} changed` }] }), /byte count|digest/);
-  const oversized = "x".repeat(32 * 1024 + 1);
+  const oversized = "x".repeat(128 * 1024 + 1);
   assert.throws(() => createRoleContextBundle([{ kind: "source_excerpt", source: "source.txt", sha256: digest(oversized), selection: { startLine: 1, endLine: 2 }, bytes: Buffer.byteLength(oversized), content: oversized }]), /source excerpt exceeds/);
 });
 

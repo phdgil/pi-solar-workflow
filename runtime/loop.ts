@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
-export const LOOP_LIMITS = Object.freeze({ cycles: 5, detours: 12, turns: 200, reviewRevisions: 5, roleCalls: 16, roleRepairs: 4, repairs: 5 });
+export const LOOP_LIMITS = Object.freeze({ cycles: 3, detours: 8, turns: 120, reviewRevisions: 3, roleCalls: 12, roleRepairs: 3, repairs: 3 });
 export const SNAPSHOT_STATE = "lite-output-snapshot-v1";
 export const PLAN_REVIEW_CORRELATION_NOTICE = "Planner, Approach Reviewer, and Critic use separate tool-free Solar Pro4 Max contexts. They are correlated same-model review signals, not independent proof; command gates and explicit human qualitative acceptance retain authority.";
 export const ROLE_ATTEMPT_TIMEOUT_MS = 180_000;

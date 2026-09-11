@@ -257,7 +257,7 @@ test("provenance bundles hash exact bytes, exclude private context, and omit ove
   assert.ok(Buffer.byteLength(JSON.stringify(bundle)) <= SOLAR_ROLE_BUNDLE_MAX_BYTES);
   assert.deepEqual(validateRoleContextBundle(bundle), bundle);
   assert.match(bundle.omitted.find(item => item.source === "private/session.txt").reason, /private/);
-  assert.match(bundle.omitted.find(item => item.source === "src/oversized.txt").reason, /32768/);
+  assert.match(bundle.omitted.find(item => item.source === "src/oversized.txt").reason, /131072/);
   assert.equal(JSON.stringify(bundle).includes(privateText), false);
   assert.equal(JSON.stringify(bundle).includes(oversized), false);
 });
