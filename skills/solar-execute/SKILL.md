@@ -1,17 +1,28 @@
 ---
 name: solar-execute
-description: Execute only the current approved step capabilities, then let host guards run gates, repairs, and fresh final verification.
+description: Execute only the current approved step capabilities, then let host guards run gates, repairs, and fresh final verification. Optimized for Solar Pro4 Max: precise step execution, honest approach documentation, clean gate reporting.
+
 ---
 
-# Solar Execute
+# Solar Execute — Solar Pro4 Optimized
 
-Execute only the exact reviewed plan revision authorized by the user's current approval token. A ready plan, old approval, prior checkpoint, progress prose, or matching filenames do not authorize a changed revision, reordered step, wider path, extra command, or external side effect.
+**Goal**: Execute one approved step at a time with precise tool usage, honest reporting, and clean gate satisfaction. Each step produces its declared output, passes its declared gates, and advances the workflow.
 
-The host supplies the one current dependency-ready step and its exact capabilities. Before acting, confirm its declared inputs and dependencies are current. Use only the listed host tools, canonical paths, and exact commands for that step. Do not infer adjacent authority. Preserve unrelated work and credentials; do not install dependencies, commit, publish, destructively roll back, or change external systems unless the approved capability explicitly covers that action and the user separately authorized it where required.
+**Solar Pro4 advantage**: Strong instruction following and tool-use precision. Use it to execute exactly what the plan declares — no more, no less.
 
-## Execute and report one step
+## Execution Loop
 
-Perform one bounded step. Then call:
+For each step:
+
+1. **Read the host-supplied step**: current step ID, declared inputs, dependencies, capabilities (exact tools, paths, commands), and gates.
+2. **Confirm inputs exist**: Verify declared input artifacts are present at their declared paths before acting.
+3. **Execute the bounded action**: Use only the declared tools, canonical paths, and exact commands. Do not infer adjacent authority.
+4. **Verify output exists**: Confirm the output artifact exists at its declared path before reporting.
+5. **Report via `solar_step_done`**: Provide exact step ID, concrete summary, approach, and evidence paths.
+
+## Calling `solar_step_done`
+
+After completing one bounded step:
 
 ```text
 solar_step_done({
@@ -25,20 +36,47 @@ solar_step_done({
 })
 ```
 
-The payload is exact:
+### Payload Rules
 
-- `stepId` is the current step ID supplied by the host, not a guessed alias.
-- `summary` describes the actual bounded result. It does not claim gates passed before the host runs them.
-- `approach.id` is a stable short identifier and `approach.description` identifies the real method, not merely a new name.
-- `evidence` lists current canonical workspace-relative files relevant to the step, including declared outputs or diagnostics. Do not invent evidence, hashes, gate results, approval IDs, or revisions.
+| Field | Requirement |
+|-------|-------------|
+| `stepId` | The current step ID supplied by the host, not a guessed alias |
+| `summary` | What changed and why current evidence satisfies the step gates; do not claim gates passed before the host runs them |
+| `approach.id` | Stable short identifier for the method used |
+| `approach.description` | The real method, not merely a new name; specific enough that a retry could differ from it |
+| `evidence` | Current canonical workspace-relative files relevant to the step, including declared outputs or diagnostics |
 
-Do not supply caller-owned plan, approval, input revision, gate status, or manifest fields. The host reloads fresh workflow state and the disk plan, derives the exact dispatch expectation, and checks workflow, workspace, approval, plan revision, artifact-table revision, current step, tool, path, command, signal, and gate identity. It guards before each gate, immediately before each PowerShell dispatch, and after each result before committing. A stale boundary stops the batch; gate B cannot run after gate A changes authority.
+Do not supply caller-owned plan, approval, input revision, gate status, or manifest fields. The host reloads fresh workflow state and the disk plan, derives the exact dispatch expectation, and checks everything.
 
-Approved command gates run with the user's permissions and are not a filesystem or shell sandbox. The exact approved command must encode its observable threshold and exit nonzero on failure. Rubric gates capture named evidence but do not turn a qualitative judgment into command proof.
+## Solar Pro4 Execution Precision
 
-## Failed step and repair
+### Before Acting
 
-A failed gate, missing output, tool error, or unchanged diagnostic is not completion. Preserve the best artifacts and visible diagnostics. A targeted retry must use a materially different approach and bind the prior failed approach:
+1. **Confirm the step is current**: The host says "work on S1" — work on S1, not S2 or "whatever seems next."
+2. **Read the capabilities**: If the step declares `capabilities: [{tool: "write", paths: ["output/result.json"]}]`, use `write` to create `output/result.json`. Do not use `bash` to write it unless the step also declares a `bash` capability with an exact command.
+3. **Check dependencies**: If `dependsOn: ["S0"]`, confirm S0's outputs exist before proceeding.
+
+### During Execution
+
+1. **Use exact commands**: If the step declares `commands: ["python transform.py --input data.json --output result.json"]`, run that exact command. Do not add flags, change arguments, or substitute a different script.
+2. **Stay in scope**: Do not install dependencies, commit, publish, or change external systems unless the approved capability explicitly covers that action.
+3. **Preserve credentials and unrelated work**: Do not touch files outside the declared paths.
+
+### After Execution
+
+1. **Verify the output artifact exists** at its declared path before calling `solar_step_done`.
+2. **Hash it mentally**: Know what content you produced. The host will hash it and compare.
+3. **Write an honest summary**: "Created result.json with transformed records. Input had 12 records, output has 12 records matching the schema. Gate G1 will verify the schema."
+
+## Failed Step and Repair
+
+When a gate fails, output is missing, or a tool error occurs:
+
+**Do not claim completion.** Preserve best artifacts and visible diagnostics.
+
+### Targeted Retry
+
+For a materially different repair approach:
 
 ```text
 solar_step_done({
@@ -53,21 +91,40 @@ solar_step_done({
 })
 ```
 
-A fresh ID, reworded description, duplicate command output, or unchanged bytes is not progress. A changed approach must produce a relevant new diagnostic, passing gate, plan resolution, or output bytes. Otherwise the host pauses with the best retained evidence. Repair limits are controller-owned; exhaustion returns to a user decision or replan rather than false completion.
+### What Counts as a Valid Retry
 
-When execution exposes a factual, intent, or feasibility defect, use the narrowest allowed detour and cite current evidence:
+A changed approach must produce:
+- A relevant new diagnostic, **or**
+- A passing gate, **or**
+- Plan resolution, **or**
+- Changed output bytes
+
+**Not valid**: New ID, reworded description, duplicate command output, unchanged bytes.
+
+### Repair Limits
+
+Repair limits are controller-owned. When exhausted, return to a user decision or replan — not false completion.
+
+## Detours During Execution
+
+When execution exposes a factual, intent, or feasibility defect, use the narrowest allowed detour:
 
 ```text
-solar_revisit({stage:'research',gap:'specific evidence gap',evidence:'current files, gate output, and why the gap matters'})
-solar_revisit({stage:'interview',gap:'specific user decision or conflict',evidence:'saved decisions plus current execution evidence'})
-solar_revisit({stage:'plan',gap:'specific contract, capability, ordering, or failed-gate defect',evidence:'current gate output, files, and attempted approaches'})
+solar_revisit({stage:'research', gap:'specific evidence gap',
+  evidence:'current files, gate output, and why the gap matters'})
+solar_revisit({stage:'interview', gap:'specific user decision or conflict',
+  evidence:'saved decisions plus current execution evidence'})
+solar_revisit({stage:'plan', gap:'specific contract, capability, ordering, or failed-gate defect',
+  evidence:'current gate output, files, and attempted approaches'})
 ```
 
-Detours preserve original intention, answers, research history, artifacts, and diagnostics. A plan detour creates a new revision requiring full role review and fresh human approval. Do not repeat a no-information detour.
+Detours preserve original intention, answers, research history, artifacts, and diagnostics. A plan detour creates a new revision requiring full role review and fresh human approval.
 
-## Final verification
+**Do not repeat a no-information detour.**
 
-After every step has a passing host record and the host reports that no step remains, request the final boundary with the same exact schema:
+## Final Verification
+
+After every step has a passing host record and the host reports no step remains, request final verification:
 
 ```text
 solar_step_done({
@@ -81,8 +138,45 @@ solar_step_done({
 })
 ```
 
-`stepId:"final"` authorizes verification only; it never re-enables arbitrary step mutation. The host hashes every final artifact before gates, reruns all exact approved gates under final authority, and rehashes finals afterward. A missing or changed file, stale plan, changed descriptor table, failed gate, or manifest mismatch routes to repair/replan and cannot reuse old evidence.
+`stepId: "final"` authorizes **verification only** — it never re-enables arbitrary step mutation.
 
-Command-only finals may auto-complete only when every final is command-accepted, every gate passes, no rubric exists, and the pre/post manifests match. Any final with human acceptance or any rubric stops at `awaiting_final_review`. The user must inspect current evidence and use the exact current `/solar-workflow accept <current-token>` or `/solar-workflow revise <feedback>` boundary. Acceptance rehashes final and evidence files; changed bytes invalidate the token.
+### Final Verification Process
 
-An ordinary final reply, static `progress.md`, old token, self-reported test result, or generic model judgment cannot complete execution. Host gate records, current manifests, and required human qualitative acceptance are authoritative. Never suppress warnings or failures, and never claim a gate or completion state the host did not commit.
+1. Host hashes every final artifact before gates.
+2. Host runs every exact approved gate under final authority.
+3. Host hashes finals after gates.
+4. Host compares pre/post manifests.
+
+A missing or changed file, stale plan, changed descriptor table, failed gate, or manifest mismatch routes to repair/replan.
+
+### Completion Paths
+
+**Command-only finals**: May auto-complete when every final is command-accepted, every gate passes, no rubric exists, and pre/post manifests match.
+
+**Human/rubric finals**: Stop at `awaiting_final_review`. The user must inspect current evidence and use `/solar-workflow accept <current-token>` or `/solar-workflow revise <feedback>`.
+
+Acceptance rehashes final and evidence files; changed bytes invalidate the token.
+
+## Solar Pro4 Common Execution Failures to Avoid
+
+- Acting on a stale or wrong step ID
+- Using a tool, path, or command not declared in the current step's capabilities
+- Reporting evidence that does not exist at the declared path
+- Repeating the same failed approach under a new ID
+- Claiming completion before the host commits the gate result
+- Adding extra work beyond what the step declares
+- Installing dependencies or changing external systems without explicit capability
+- Writing a static progress report instead of actual artifact output
+- Claiming a gate passed when the host hasn't verified it yet
+- Suppressing warnings or failures
+
+## Honest Reporting
+
+The host gate records, current manifests, and required human qualitative acceptance are authoritative. When you report:
+
+- **Say what you did**, not what you hoped would happen.
+- **Say what evidence exists**, not what you think should exist.
+- **Say when a gate failed**, not when you think it should pass.
+- **Say when you're blocked**, not when you want to pretend progress.
+
+An ordinary final reply, static `progress.md`, old token, self-reported test result, or generic model judgment cannot complete execution.

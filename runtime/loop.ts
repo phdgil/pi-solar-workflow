@@ -2,11 +2,38 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
-export const LOOP_LIMITS = Object.freeze({ cycles: 3, detours: 8, turns: 120, reviewRevisions: 3, roleCalls: 12, roleRepairs: 3, repairs: 3 });
+export const LOOP_LIMITS = Object.freeze({ cycles: 5, detours: 12, turns: 200, reviewRevisions: 5, roleCalls: 16, roleRepairs: 4, repairs: 5 });
 export const SNAPSHOT_STATE = "lite-output-snapshot-v1";
 export const PLAN_REVIEW_CORRELATION_NOTICE = "Planner, Approach Reviewer, and Critic use separate tool-free Solar Pro4 Max contexts. They are correlated same-model review signals, not independent proof; command gates and explicit human qualitative acceptance retain authority.";
 export const ROLE_ATTEMPT_TIMEOUT_MS = 180_000;
-export const PROVENANCE_LIMITS = Object.freeze({ bundleBytes: 256 * 1024, sourceExcerptBytes: 32 * 1024 });
+export const PROVENANCE_LIMITS = Object.freeze({ bundleBytes: 1_024 * 1024, sourceExcerptBytes: 128 * 1024 });
+export const SOLAR_PRO4_CONTEXT_HINTS = Object.freeze({
+  planner: {
+    reasoningFramework: "Think step by step: (1) restate the goal in one sentence from the original request, (2) list each requirement with its provenance source, (3) for each requirement decide the concrete artifact it produces and the observable check that proves it, (4) order steps so each input exists before its consumer, (5) for every step name the exact tool, exact path or exact command, and the exact gate that verifies the output, (6) verify selfCheck covers every requirement and every produced artifact exactly once with no unresolved item left behind.",
+    commonFailures: ["Requirements that appear in prose but have no producing step", "Steps that consume an artifact before any step produces it", "Capabilities that name a tool but no exact path or command", "Final artifacts with acceptance:none", "Gates whose check is a vague qualitative statement rather than an exact command or a named rubric", "selfCheck resolving to [] when requirements or produced artifacts exist"]
+  },
+  reviewer: {
+    reasoningFramework: "Think step by step: (1) read the full current plan text and the ExecutionContractV3, not just selfCheck, (2) for each requirement confirm an actual step requires it and at least one of that step's gates verifies it, (3) for each artifact confirm exactly one producer and a reciprocal gate binding, (4) for each capability confirm an exact tool, path or command, and that it is used by a step, (5) check dependency ordering and cycles, (6) state the single strongest material defect with its exact plan location before any advisory note.",
+    commonFailures: ["Accepting selfCheck as proof instead of inspecting the full contract", "Reporting coverage without an actual covering step and gate", "Duplicate or invented finding IDs across the two reviewers", "Vague requiredChange that does not name a concrete plan location"]
+  },
+  approach_reviewer: {
+    reasoningFramework: "Think step by step: (1) read the full current plan text and the ExecutionContractV3, not just selfCheck, (2) for each requirement confirm an actual step requires it and at least one of that step's gates verifies it, (3) for each artifact confirm exactly one producer and a reciprocal gate binding, (4) for each capability confirm an exact tool, path or command, and that it is used by a step, (5) check dependency ordering and cycles, (6) state the single strongest material defect with its exact plan location before any advisory note.",
+    commonFailures: ["Accepting selfCheck as proof instead of inspecting the full contract", "Reporting coverage without an actual covering step and gate", "Duplicate or invented finding IDs across the two reviewers", "Vague requiredChange that does not name a concrete plan location"]
+  },
+  critic: {
+    reasoningFramework: "Think step by step: (1) read the full plan and contract, (2) check that every requirement traces to a bounded step and a verifiable gate, (3) check that the artifact table matches the prose goal and scope, (4) identify the largest scope, risk, verification, or acceptance gap, (5) for each gap state the exact plan location and a concrete required change, (6) distinguish material defects that block approval from advisory improvements.",
+    commonFailures: ["Treating the plan as complete because it has many steps", "Missing an acceptance gap where a final artifact has no command or human gate", "Confusing a rubric with a command gate", "Reporting only advisory findings when a material defect exists"]
+  },
+  interviewer: {
+    reasoningFramework: "Think step by step: (1) reread the original request and all saved answers, (2) separate what is decided, corrected, constrained, or successful from what is still open, (3) for each open item decide whether it is a user decision, a contradiction, or a factual gap, (4) if it is factual and the research head is stale, propose one targeted research detour with a named next question, (5) if the goal, constraints, and success evidence are explicit and no blocker remains, report ready with a one-sentence goal sentence, (6) never infer readiness from a score, a new ID, a URL, or repeated wording.",
+    commonFailures: ["Treating a score increase as readiness", "Asking the user to re-answer a question the saved answer already resolves", "Reporting ready while a material gap, contradiction, or blocker remains", "Inventing a new answer head or research head instead of reusing the saved one", "Closing early with unresolved items still present"]
+  },
+  executor: {
+    reasoningFramework: "Think step by step: (1) confirm the current step ID, its declared inputs, dependencies, capabilities, and gates, (2) perform only the bounded action the step describes using only the declared tool, path, or exact command, (3) verify the output artifact exists at its declared path before reporting, (4) describe the concrete observable change and the exact evidence file that supports it, (5) if a gate fails, choose a materially different approach and bind differsFrom to the prior failed approach ID, (6) never claim a gate passed or a step complete before the host gate record exists.",
+    commonFailures: ["Acting on a stale or wrong step ID", "Using a tool, path, or command not declared in the current step's capabilities", "Reporting evidence that does not exist at the declared path", "Repeating the same failed approach under a new ID", "Claiming completion before the host commits the gate result"]
+  }
+});
+export const SOLAR_PRO4_ROLE_PROMPT_SUFFIX = "Return only the requested JSON object. Do not add commentary, hedges, apologies, or alternative plans. If the current provenance is insufficient for a material decision, return the requested object with the honest limitation recorded in limitations and, for reviewers, the appropriate verdict.";
 
 export type ArtifactDescriptor = {
   id: string;
