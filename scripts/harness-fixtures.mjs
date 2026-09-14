@@ -7,8 +7,8 @@ const CASE_ORDER = [
   "plan-software",
   "execute-summary",
   "execute-inventory-heldout",
-  "execute-config-overlay-heldout",
-  "execute-dependency-readiness-heldout",
+  "execute-module-alias-heldout",
+  "execute-access-matrix-heldout",
 ];
 
 const SUMMARY_INPUT = [
@@ -27,35 +27,42 @@ const INVENTORY_INPUT = [
   { sku: "cd-2", location: "south", quantity: 1 },
 ];
 
-const CONFIG_OVERLAY_INPUT = {
-  base: {
-    retries: 3,
-    strictMode: true,
-    theme: "dark",
-    timeoutMs: 5000,
-  },
-  operations: [
-    { key: "timeoutMs", action: "set", value: 0 },
-    { key: "region", action: "set", value: "eu-west" },
-    { key: "theme", action: "set", value: "dark" },
-    { key: "strictMode", action: "remove" },
-    { key: "missingFlag", action: "remove" },
-    { key: "region", action: "set", value: "ap-south" },
-    { key: "telemetry", action: "set", value: false },
+const MODULE_ALIAS_INPUT = {
+  aliases: [
+    { key: "@core/", target: "./src/core/" },
+    { key: "legacy-api", target: "./compat/api.mjs" },
+    { key: "@core/ui/", target: "./src/widgets/" },
+    { key: "unused-exact", target: "./unused.mjs" },
+    { key: "@test/", target: "./tests/" },
+  ],
+  imports: [
+    { id: "widget", specifier: "@core/ui/button.mjs" },
+    { id: "legacy-subpath", specifier: "legacy-api/v2" },
+    { id: "helper", specifier: "@core/math/add.mjs" },
+    { id: "raw-relative", specifier: "./local.mjs" },
+    { id: "legacy", specifier: "legacy-api" },
+    { id: "test-root", specifier: "@test/" },
+    { id: "lookalike", specifier: "@coreless/file.mjs" },
   ],
 };
 
-const DEPENDENCY_READINESS_INPUT = [
-  { id: "deploy", state: "pending", dependsOn: ["package", "security"] },
-  { id: "lint", state: "done", dependsOn: [] },
-  { id: "package", state: "pending", dependsOn: ["lint", "unit"] },
-  { id: "unit", state: "pending", dependsOn: [] },
-  { id: "docs", state: "done", dependsOn: [] },
-  { id: "security", state: "pending", dependsOn: ["unit"] },
-  { id: "announce", state: "pending", dependsOn: ["deploy", "docs"] },
-  { id: "publish-docs", state: "pending", dependsOn: ["docs"] },
-  { id: "archive", state: "done", dependsOn: [] },
-];
+const ACCESS_MATRIX_INPUT = {
+  roles: [
+    { id: "auditor", allow: ["audit:read", "repo:read"], deny: ["repo:write"] },
+    { id: "contributor", allow: ["issue:write", "repo:read", "repo:write"], deny: [] },
+    { id: "restricted", allow: ["build:run"], deny: ["build:run", "repo:write"] },
+    { id: "observer", allow: [], deny: ["audit:read"] },
+    { id: "support", allow: ["issue:read", "issue:write"], deny: [] },
+  ],
+  accounts: [
+    { id: "fay", roles: ["support", "contributor"] },
+    { id: "bea", roles: ["restricted", "contributor"] },
+    { id: "dev", roles: [] },
+    { id: "amy", roles: ["contributor", "auditor"] },
+    { id: "eli", roles: ["auditor", "observer"] },
+    { id: "cy", roles: ["support", "observer"] },
+  ],
+};
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -114,39 +121,43 @@ function inventoryExpected(input) {
 
 const SUMMARY_EXPECTED = summaryExpected(SUMMARY_INPUT);
 const INVENTORY_EXPECTED = inventoryExpected(INVENTORY_INPUT);
-const CONFIG_OVERLAY_EXPECTED = {
-  config: {
-    region: "ap-south",
-    retries: 3,
-    telemetry: false,
-    theme: "dark",
-    timeoutMs: 0,
-  },
-  events: [
-    { index: 0, key: "timeoutMs", outcome: "updated", previousValue: 5000, nextValue: 0 },
-    { index: 1, key: "region", outcome: "added", previousValue: null, nextValue: "eu-west" },
-    { index: 2, key: "theme", outcome: "unchanged", previousValue: "dark", nextValue: "dark" },
-    { index: 3, key: "strictMode", outcome: "removed", previousValue: true, nextValue: null },
-    { index: 4, key: "missingFlag", outcome: "absent", previousValue: null, nextValue: null },
-    { index: 5, key: "region", outcome: "updated", previousValue: "eu-west", nextValue: "ap-south" },
-    { index: 6, key: "telemetry", outcome: "added", previousValue: null, nextValue: false },
+const MODULE_ALIAS_EXPECTED = {
+  resolutions: [
+    { id: "helper", specifier: "@core/math/add.mjs", status: "mapped", alias: "@core/", target: "./src/core/math/add.mjs" },
+    { id: "legacy", specifier: "legacy-api", status: "mapped", alias: "legacy-api", target: "./compat/api.mjs" },
+    { id: "legacy-subpath", specifier: "legacy-api/v2", status: "unmapped", alias: null, target: null },
+    { id: "lookalike", specifier: "@coreless/file.mjs", status: "unmapped", alias: null, target: null },
+    { id: "raw-relative", specifier: "./local.mjs", status: "unmapped", alias: null, target: null },
+    { id: "test-root", specifier: "@test/", status: "mapped", alias: "@test/", target: "./tests/" },
+    { id: "widget", specifier: "@core/ui/button.mjs", status: "mapped", alias: "@core/ui/", target: "./src/widgets/button.mjs" },
   ],
-  operationCount: 7,
-  changedCount: 5,
+  aliasUsage: [
+    { key: "@core/", count: 1 },
+    { key: "@core/ui/", count: 1 },
+    { key: "@test/", count: 1 },
+    { key: "legacy-api", count: 1 },
+    { key: "unused-exact", count: 0 },
+  ],
+  counts: { mapped: 4, unmapped: 3 },
 };
-const DEPENDENCY_READINESS_EXPECTED = {
-  tasks: [
-    { id: "announce", status: "blocked", blockers: ["deploy"] },
-    { id: "archive", status: "complete", blockers: [] },
-    { id: "deploy", status: "blocked", blockers: ["package", "security"] },
-    { id: "docs", status: "complete", blockers: [] },
-    { id: "lint", status: "complete", blockers: [] },
-    { id: "package", status: "blocked", blockers: ["unit"] },
-    { id: "publish-docs", status: "ready", blockers: [] },
-    { id: "security", status: "blocked", blockers: ["unit"] },
-    { id: "unit", status: "ready", blockers: [] },
+const ACCESS_MATRIX_EXPECTED = {
+  accounts: [
+    { id: "amy", effective: ["audit:read", "issue:write", "repo:read"], denied: ["repo:write"] },
+    { id: "bea", effective: ["issue:write", "repo:read"], denied: ["build:run", "repo:write"] },
+    { id: "cy", effective: ["issue:read", "issue:write"], denied: ["audit:read"] },
+    { id: "dev", effective: [], denied: [] },
+    { id: "eli", effective: ["repo:read"], denied: ["audit:read", "repo:write"] },
+    { id: "fay", effective: ["issue:read", "issue:write", "repo:read", "repo:write"], denied: [] },
   ],
-  counts: { complete: 3, ready: 2, blocked: 4 },
+  permissionUsage: [
+    { permission: "audit:read", accountCount: 1 },
+    { permission: "build:run", accountCount: 0 },
+    { permission: "issue:read", accountCount: 2 },
+    { permission: "issue:write", accountCount: 4 },
+    { permission: "repo:read", accountCount: 4 },
+    { permission: "repo:write", accountCount: 1 },
+  ],
+  counts: { accountCount: 6, withAccess: 5, withoutAccess: 1 },
 };
 
 const SUMMARY_EVALUATOR = `import assert from "node:assert/strict";
@@ -193,87 +204,115 @@ assert.deepEqual(actual, expected);
 console.log("inventory fixture passed");
 `;
 
-const CONFIG_OVERLAY_EVALUATOR = `import assert from "node:assert/strict";
+const MODULE_ALIAS_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const input = JSON.parse(readFileSync("config-operations.json", "utf8"));
-const actual = JSON.parse(readFileSync("resolved-config.json", "utf8"));
+const input = JSON.parse(readFileSync("module-aliases.json", "utf8"));
+const actual = JSON.parse(readFileSync("resolved-imports.json", "utf8"));
 assert.ok(input && typeof input === "object" && !Array.isArray(input));
-assert.deepEqual(Object.keys(input).sort(), ["base", "operations"]);
-assert.ok(input.base && typeof input.base === "object" && !Array.isArray(input.base));
-assert.ok(Array.isArray(input.operations));
-const validValue = value => typeof value === "string" || typeof value === "boolean" || Number.isFinite(value);
-for (const [key, value] of Object.entries(input.base)) {
-  assert.ok(key.length > 0);
-  assert.ok(validValue(value));
+assert.deepEqual(Object.keys(input).sort(), ["aliases", "imports"]);
+assert.ok(Array.isArray(input.aliases));
+assert.ok(Array.isArray(input.imports));
+const aliases = new Map();
+for (const alias of input.aliases) {
+  assert.ok(alias && typeof alias === "object" && !Array.isArray(alias));
+  assert.deepEqual(Object.keys(alias).sort(), ["key", "target"]);
+  assert.ok(typeof alias.key === "string" && alias.key.length > 0);
+  assert.ok(typeof alias.target === "string" && alias.target.length > 0);
+  assert.equal(aliases.has(alias.key), false);
+  if (alias.key.endsWith("/")) assert.ok(alias.target.endsWith("/"));
+  aliases.set(alias.key, alias);
 }
-const config = { ...input.base };
-const events = [];
-let changedCount = 0;
-for (const [index, operation] of input.operations.entries()) {
-  assert.ok(operation && typeof operation === "object" && !Array.isArray(operation));
-  assert.ok(typeof operation.key === "string" && operation.key.length > 0);
-  assert.ok(operation.action === "set" || operation.action === "remove");
-  const expectedKeys = operation.action === "set" ? ["action", "key", "value"] : ["action", "key"];
-  assert.deepEqual(Object.keys(operation).sort(), expectedKeys);
-  const present = Object.hasOwn(config, operation.key);
-  const previousValue = present ? config[operation.key] : null;
-  let outcome;
-  let nextValue = null;
-  if (operation.action === "set") {
-    assert.ok(validValue(operation.value));
-    nextValue = operation.value;
-    outcome = !present ? "added" : Object.is(previousValue, nextValue) ? "unchanged" : "updated";
-    config[operation.key] = nextValue;
-  } else if (present) {
-    outcome = "removed";
-    delete config[operation.key];
-  } else {
-    outcome = "absent";
+const ids = new Set();
+for (const row of input.imports) {
+  assert.ok(row && typeof row === "object" && !Array.isArray(row));
+  assert.deepEqual(Object.keys(row).sort(), ["id", "specifier"]);
+  assert.ok(typeof row.id === "string" && row.id.length > 0);
+  assert.ok(typeof row.specifier === "string" && row.specifier.length > 0);
+  assert.equal(ids.has(row.id), false);
+  ids.add(row.id);
+}
+const usage = new Map([...aliases.keys()].map(key => [key, 0]));
+const counts = { mapped: 0, unmapped: 0 };
+const resolutions = input.imports.map(row => {
+  const matches = [...aliases.values()]
+    .filter(alias => alias.key.endsWith("/") ? row.specifier.startsWith(alias.key) : row.specifier === alias.key)
+    .sort((left, right) => right.key.length - left.key.length || left.key.localeCompare(right.key, "en"));
+  const selected = matches[0];
+  if (!selected) {
+    counts.unmapped += 1;
+    return { id: row.id, specifier: row.specifier, status: "unmapped", alias: null, target: null };
   }
-  if (outcome === "added" || outcome === "updated" || outcome === "removed") changedCount += 1;
-  events.push({ index, key: operation.key, outcome, previousValue, nextValue });
-}
-const orderedConfig = Object.fromEntries(Object.entries(config).sort(([left], [right]) => left.localeCompare(right, "en")));
-const expected = { config: orderedConfig, events, operationCount: input.operations.length, changedCount };
-assert.deepEqual(Object.keys(actual.config), Object.keys(orderedConfig));
+  counts.mapped += 1;
+  usage.set(selected.key, usage.get(selected.key) + 1);
+  const target = selected.key.endsWith("/")
+    ? selected.target + row.specifier.slice(selected.key.length)
+    : selected.target;
+  return { id: row.id, specifier: row.specifier, status: "mapped", alias: selected.key, target };
+}).sort((left, right) => left.id.localeCompare(right.id, "en"));
+const aliasUsage = [...aliases.keys()]
+  .sort((left, right) => left.localeCompare(right, "en"))
+  .map(key => ({ key, count: usage.get(key) }));
+const expected = { resolutions, aliasUsage, counts };
 assert.deepEqual(actual, expected);
-console.log("config overlay fixture passed");
+console.log("module alias fixture passed");
 `;
 
-const DEPENDENCY_READINESS_EVALUATOR = `import assert from "node:assert/strict";
+const ACCESS_MATRIX_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const input = JSON.parse(readFileSync("tasks.json", "utf8"));
-const actual = JSON.parse(readFileSync("dependency-readiness.json", "utf8"));
-assert.ok(Array.isArray(input));
-const byId = new Map();
-for (const row of input) {
-  assert.ok(row && typeof row === "object" && !Array.isArray(row));
-  assert.deepEqual(Object.keys(row).sort(), ["dependsOn", "id", "state"]);
-  assert.ok(typeof row.id === "string" && row.id.length > 0);
-  assert.equal(byId.has(row.id), false);
-  assert.ok(row.state === "done" || row.state === "pending");
-  assert.ok(Array.isArray(row.dependsOn));
-  assert.ok(row.dependsOn.every(dependency => typeof dependency === "string" && dependency.length > 0 && dependency !== row.id));
-  assert.equal(new Set(row.dependsOn).size, row.dependsOn.length);
-  byId.set(row.id, row);
+const input = JSON.parse(readFileSync("role-assignments.json", "utf8"));
+const actual = JSON.parse(readFileSync("access-matrix.json", "utf8"));
+assert.ok(input && typeof input === "object" && !Array.isArray(input));
+assert.deepEqual(Object.keys(input).sort(), ["accounts", "roles"]);
+assert.ok(Array.isArray(input.roles));
+assert.ok(Array.isArray(input.accounts));
+const roles = new Map();
+const permissionUniverse = new Set();
+for (const role of input.roles) {
+  assert.ok(role && typeof role === "object" && !Array.isArray(role));
+  assert.deepEqual(Object.keys(role).sort(), ["allow", "deny", "id"]);
+  assert.ok(typeof role.id === "string" && role.id.length > 0);
+  assert.equal(roles.has(role.id), false);
+  for (const field of ["allow", "deny"]) {
+    assert.ok(Array.isArray(role[field]));
+    assert.ok(role[field].every(permission => typeof permission === "string" && permission.length > 0));
+    assert.equal(new Set(role[field]).size, role[field].length);
+    for (const permission of role[field]) permissionUniverse.add(permission);
+  }
+  roles.set(role.id, role);
 }
-for (const row of input) {
-  assert.ok(row.dependsOn.every(dependency => byId.has(dependency)));
+const accountIds = new Set();
+for (const account of input.accounts) {
+  assert.ok(account && typeof account === "object" && !Array.isArray(account));
+  assert.deepEqual(Object.keys(account).sort(), ["id", "roles"]);
+  assert.ok(typeof account.id === "string" && account.id.length > 0);
+  assert.equal(accountIds.has(account.id), false);
+  assert.ok(Array.isArray(account.roles));
+  assert.equal(new Set(account.roles).size, account.roles.length);
+  assert.ok(account.roles.every(roleId => typeof roleId === "string" && roles.has(roleId)));
+  accountIds.add(account.id);
 }
-const counts = { complete: 0, ready: 0, blocked: 0 };
-const tasks = [...input].sort((left, right) => left.id.localeCompare(right.id, "en")).map(row => {
-  const blockers = row.state === "done"
-    ? []
-    : row.dependsOn.filter(dependency => byId.get(dependency).state !== "done").sort((left, right) => left.localeCompare(right, "en"));
-  const status = row.state === "done" ? "complete" : blockers.length === 0 ? "ready" : "blocked";
-  counts[status] += 1;
-  return { id: row.id, status, blockers };
-});
-const expected = { tasks, counts };
+const accounts = [...input.accounts]
+  .sort((left, right) => left.id.localeCompare(right.id, "en"))
+  .map(account => {
+    const allowed = new Set();
+    const denied = new Set();
+    for (const roleId of account.roles) {
+      for (const permission of roles.get(roleId).allow) allowed.add(permission);
+      for (const permission of roles.get(roleId).deny) denied.add(permission);
+    }
+    const effective = [...allowed].filter(permission => !denied.has(permission)).sort((left, right) => left.localeCompare(right, "en"));
+    return { id: account.id, effective, denied: [...denied].sort((left, right) => left.localeCompare(right, "en")) };
+  });
+const permissionUsage = [...permissionUniverse]
+  .sort((left, right) => left.localeCompare(right, "en"))
+  .map(permission => ({ permission, accountCount: accounts.filter(account => account.effective.includes(permission)).length }));
+const withAccess = accounts.filter(account => account.effective.length > 0).length;
+const counts = { accountCount: accounts.length, withAccess, withoutAccess: accounts.length - withAccess };
+const expected = { accounts, permissionUsage, counts };
 assert.deepEqual(actual, expected);
-console.log("dependency readiness fixture passed");
+console.log("access matrix fixture passed");
 `;
 
 const PLAN_INPUT = [
@@ -376,45 +415,45 @@ const FIXTURES = {
     goalPolicy: { requiredPaths: ["inventory.json", "inventory-report.json"], format: "json" },
     expectedOutput: INVENTORY_EXPECTED,
   },
-  "execute-config-overlay-heldout": {
-    name: "execute-config-overlay-heldout",
-    description: "Post-C14 held-out guarded execution applies an ordered configuration overlay with an exact change ledger.",
+  "execute-module-alias-heldout": {
+    name: "execute-module-alias-heldout",
+    description: "Post-C16 held-out guarded execution resolves exact and longest-prefix module aliases with complete usage accounting.",
     kind: "execute",
     heldOut: true,
     files: {
-      "config-operations.json": jsonFile(CONFIG_OVERLAY_INPUT),
-      "evaluator.mjs": CONFIG_OVERLAY_EVALUATOR,
+      "module-aliases.json": jsonFile(MODULE_ALIAS_INPUT),
+      "evaluator.mjs": MODULE_ALIAS_EVALUATOR,
     },
-    outputPaths: ["resolved-config.json"],
-    allowedReadPaths: ["config-operations.json", "evaluator.mjs"],
+    outputPaths: ["resolved-imports.json"],
+    allowedReadPaths: ["module-aliases.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read config-operations.json and, only after exact goal confirmation, full reviewed planning, and approval, create resolved-config.json. The immutable input has exactly base and operations. base is an object whose nonempty keys map only to JSON strings, finite numbers, or booleans. Apply operations in input order to a copy of base. Each operation has a nonempty key and action set or remove; set has exactly one value of the same allowed scalar types, while remove has no value. A set is added when its key is absent, unchanged when the current value is exactly equal, and updated otherwise; it always leaves the supplied value. A remove is removed when its key is present and absent otherwise. The JSON result has exactly config, events, operationCount, and changedCount. config is the final object with keys sorted ascending. events stays in operation order and has exactly index, key, outcome, previousValue, and nextValue; index is zero-based, missing previous values and all remove next values are null, and set nextValue is its supplied value. operationCount is the number of operations. changedCount counts only added, updated, and removed outcomes. Preserve false and zero as values. The objective local acceptance command is exactly `node evaluator.mjs`. config-operations.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing resolved-config.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read module-aliases.json and, only after exact goal confirmation, full reviewed planning, and approval, create resolved-imports.json as strict JSON. The immutable input is an object with exactly aliases and imports. Each aliases entry has exactly unique nonempty key and nonempty target strings. A key ending in / is a prefix rule: it matches only at the start of a specifier, its target also ends in /, and the suffix after the key is appended verbatim to the target. Every other key is exact-only and uses its target verbatim. When multiple rules match, select the rule with the greatest key length. Do not case-fold, decode, path-normalize, or treat a lookalike substring as a match. Each imports entry has exactly a unique nonempty id and a nonempty specifier. The result has exactly resolutions, aliasUsage, and counts. resolutions has one entry per import, sorted ascending by id, with exactly id, specifier, status, alias, and target. A selected rule produces status mapped plus its key and resolved target; no selected rule produces status unmapped with null alias and target. aliasUsage contains every input alias, including unused aliases, sorted ascending by key, with exactly key and count; count is the number of imports selecting that alias. counts has exactly mapped and unmapped and counts all imports. All string comparisons are exact and case-sensitive. No material policy choice is implicit. The objective local acceptance command is exactly `node evaluator.mjs`. module-aliases.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing resolved-imports.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
     answers: [
-      "All material decisions are fixed: operations apply sequentially; equality is exact for the allowed JSON scalar values; false and zero are not missing; absent and unchanged operations stay in the ledger but do not increase changedCount; output keys and event fields are exactly as stated; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
-      "There are no additional user choices. Keep config-operations.json and evaluator.mjs immutable and resolved-config.json as the sole mutable JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, or a human rubric.",
+      "All material decisions are fixed: non-slash aliases match only an identical specifier; slash aliases require a start-of-string match and append the untouched suffix; the longest matching key wins; unmatched nulls and zero-use aliases remain present; all declared ordering and exact fields are required; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep module-aliases.json and evaluator.mjs immutable and resolved-imports.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
     ],
-    goalPolicy: { requiredPaths: ["config-operations.json", "resolved-config.json"], format: "json" },
-    expectedOutput: CONFIG_OVERLAY_EXPECTED,
+    goalPolicy: { requiredPaths: ["module-aliases.json", "resolved-imports.json"], format: "json" },
+    expectedOutput: MODULE_ALIAS_EXPECTED,
   },
-  "execute-dependency-readiness-heldout": {
-    name: "execute-dependency-readiness-heldout",
-    description: "Post-C14 held-out guarded execution derives direct dependency readiness and blocker sets.",
+  "execute-access-matrix-heldout": {
+    name: "execute-access-matrix-heldout",
+    description: "Post-C16 held-out guarded execution derives deny-precedence account access and permission usage from direct role assignments.",
     kind: "execute",
     heldOut: true,
     files: {
-      "tasks.json": jsonFile(DEPENDENCY_READINESS_INPUT),
-      "evaluator.mjs": DEPENDENCY_READINESS_EVALUATOR,
+      "role-assignments.json": jsonFile(ACCESS_MATRIX_INPUT),
+      "evaluator.mjs": ACCESS_MATRIX_EVALUATOR,
     },
-    outputPaths: ["dependency-readiness.json"],
-    allowedReadPaths: ["tasks.json", "evaluator.mjs"],
+    outputPaths: ["access-matrix.json"],
+    allowedReadPaths: ["role-assignments.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read tasks.json and, only after exact goal confirmation, full reviewed planning, and approval, create dependency-readiness.json. The immutable input is a JSON array of objects with exactly id, state, and dependsOn. Every id is unique and nonempty. state is exactly done or pending. dependsOn is a duplicate-free array of other existing ids; the supplied graph is acyclic. A done task is complete with no blockers. A pending task is ready only when every direct dependency has state done; otherwise it is blocked, with blockers equal to its direct dependency ids whose state is not done. A pending dependency remains a blocker even if that dependency is itself ready, so do not substitute transitive inference. The JSON result has exactly tasks and counts. tasks contains one object per input task with exactly id, status, and blockers, sorted ascending by id. Each blockers array is sorted ascending. counts has exactly complete, ready, and blocked and counts all tasks. The objective local acceptance command is exactly `node evaluator.mjs`. tasks.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing dependency-readiness.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read role-assignments.json and, only after exact goal confirmation, full reviewed planning, and approval, create access-matrix.json as strict JSON. The immutable input is an object with exactly roles and accounts. Each role has exactly a unique nonempty id plus duplicate-free allow and deny arrays of nonempty permission strings. Each account has exactly a unique nonempty id and a duplicate-free roles array containing only declared role ids. For each account, union the allow permissions and separately union the deny permissions of its directly assigned roles. denied contains the complete deny union even when a denied permission was never allowed. effective contains the allow union minus the deny union, so any deny wins across all assigned roles. Do not infer role inheritance or permissions not present in the input. The result has exactly accounts, permissionUsage, and counts. accounts has one entry per input account, sorted ascending by id, with exactly id, effective, and denied; both permission arrays are deduplicated and sorted ascending. permissionUsage contains every distinct permission mentioned in any role allow or deny array, including permissions effective for zero accounts, sorted ascending by permission, with exactly permission and accountCount; each account contributes at most once to a permission count. counts has exactly accountCount, withAccess, and withoutAccess, where access means a nonempty effective array. Permission and id comparisons are exact and case-sensitive. No material policy choice is implicit. The objective local acceptance command is exactly `node evaluator.mjs`. role-assignments.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing access-matrix.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
     answers: [
-      "All material decisions are fixed: readiness uses direct dependency states from the immutable input; only done satisfies a dependency; pending tasks with no blockers are ready; done tasks are complete; task and blocker ordering is ascending; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
-      "There are no additional user choices. Keep tasks.json and evaluator.mjs immutable and dependency-readiness.json as the sole mutable JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, or a human rubric.",
+      "All material decisions are fixed: only directly assigned roles participate; unions deduplicate permissions; deny always overrides allow; denied retains permissions that were not allowed; the usage universe includes zero-effective permissions and counts accounts rather than role occurrences; all declared ordering and fields are exact; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep role-assignments.json and evaluator.mjs immutable and access-matrix.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
     ],
-    goalPolicy: { requiredPaths: ["tasks.json", "dependency-readiness.json"], format: "json" },
-    expectedOutput: DEPENDENCY_READINESS_EXPECTED,
+    goalPolicy: { requiredPaths: ["role-assignments.json", "access-matrix.json"], format: "json" },
+    expectedOutput: ACCESS_MATRIX_EXPECTED,
   },
 };
 

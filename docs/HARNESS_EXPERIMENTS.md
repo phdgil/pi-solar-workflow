@@ -226,3 +226,5 @@ C15는 같은 product와 새 heldout protocol로 일곱 사례의 세 회차를 
 감사는 research 예외가 exact-session hardlink 거절보다 먼저 적용되는 교차 조건, workspace mismatch가 stopped 상태를 덮어쓰는 조건, blocked finding이 다음 revision의 의무에서 사라지는 문제를 찾았다. 또한 reviewer의 JSON 문법 통과 후 의미 오류가 bounded repair 밖에서 거절되고, 긴 검증 오류가 repair prompt의 기존 byte 한도를 초과할 수 있었다. 이는 정적 재현 경로가 있는 controller 결함이며 실제 비밀 유출이나 Solar의 해당 입력 생성을 관측했다는 뜻은 아니다. 보정과 현행 검증 전에는 C15를 수렴 근거로 사용할 수 없다.
 
 보정 후 305/305 회귀 검사와 installed-Pi smoke가 통과했다. 실제 runner의 승인·완료 16/16 검사도 유지했다. 별도 임시 mirror에서는 변경하지 않은 C15 product에 새 회귀 검사를 적용하여 blocked finding 한 건, privacy 교차 두 건, reviewer/진단 한도 네 건의 assertion 실패를 확인했다. 초기 mirror의 누락된 test dependency 오류도 보존하고 구분했다. Reviewer 검증 결과의 정규화가 원래 JSON과 충돌하지 않도록, callback은 검증만 수행한 뒤 원래 parsed value를 commit에 전달한다. 이 증거는 보정의 회귀·통합 검증이며 새로운 real Solar 성공 횟수가 아니다.
+
+C16 corrected-product의 planning 진단도 593237 ms / 8/12로 실패했다. Planner 세 시도는 각각 180000 ms 제한에 도달했고, 완료된 한 후보는 읽을 `records.json`을 step output으로 선언하면서 대응하는 write/command capability가 없어 거절됐다. Controller 보정이 이 모델의 시간 제한이나 계약 작성 오류를 없앴다는 증거는 없다. 새 heldout protocol 동결 전 진단이므로 수렴 횟수에 포함하지 않는다.

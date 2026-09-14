@@ -198,14 +198,14 @@ role-only JSON 생성 테스트와 full controller/Pi loop 결과는 반드시 �
 3. Planner 세션에만 검증된 native JSON Schema를 명시적으로 전달한다. 현재 tool inventory와 finding IDs는 생성 형식을 제한할 뿐 권한을 부여하지 않는다. provider 출력 뒤 기존 V3 의미·권한 검증을 그대로 수행한다.
 4. raw receipt, 전체 Markdown revision, 두 fresh reviewer, 사용자 승인, tool-free 세션, Solar Max, 180초 deadline 및 모든 시도 예산을 유지한다. regression/installed-Pi 검증 뒤 새 source를 동결하고 별도 실측한다.
 
-### C14 동결 이후 fresh held-out
+### C16 보정 동결 이후 fresh held-out
 
-298개 test와 installed-Pi smoke를 마친 C14 product source는 `.experiments/extended-168h/candidate-014/snapshot.json`에 동결했다(snapshot file SHA-256 `a556f7a17ce86ec752753fb08cd5290bed3225e5813b0ea86b20396cfe52d40e`). 이 동결 뒤 현재 active fixture registry는 기존 개발 과제 5개의 정의와 데이터를 그대로 유지하고, 이전의 두 execute held-out을 active set에서 제외한 뒤 다음 두 과제를 새로 사용한다.
+C14 이후 작성한 config-overlay/dependency-readiness 과제는 C15 중단 때까지 live 실행하지 않았다. 이후 감사 결함을 보정했으므로 보수적으로 다시 교체했다. 305개 test와 installed-Pi runner 16/16 검사를 마친 C16 product는 `.experiments/extended-168h/candidate-016/snapshot.json`에 동결했다(snapshot SHA-256 `c7cd2c5b756213516233aa69a788d9a6a7b6e3a666ca17fc3d496531cd4ec211`). 동결 이후 기존 개발 과제 5개의 정의와 데이터를 유지하면서 다음 두 과제를 새로 작성했다.
 
-- `execute-config-overlay-heldout`: 순서가 있는 설정 연산을 적용하고 추가·변경·무변경·삭제·부재 분기, `false`/0 보존, 최종 키 정렬, 연산별 변경 ledger와 집계를 독립 검사한다.
-- `execute-dependency-readiness-heldout`: 완료/대기 상태와 직접 의존성만으로 완료·실행 가능·차단을 판정하고, 빈 의존성·모두 완료·미완료 직접 의존성·복수 blocker·정렬 분기를 독립 검사한다. 실행 가능한 대기 의존성을 완료로 간주하거나 transitive blocker를 만들어 내지 않는다.
+- `execute-module-alias-heldout`: `module-aliases.json`에서 `resolved-imports.json`을 생성한다.
+- `execute-access-matrix-heldout`: `role-assignments.json`에서 `access-matrix.json`을 생성한다.
 
-두 과제는 C14 동결 이후 runtime tuning과 분리된 authoring lane에서 작성했으며 어떤 이전 live run outcome이나 result/session/metrics artifact도 열람하거나 사용하지 않았다. 다만 이전 held-out 요청 설명이 이미 노출된 사실 때문에 그 설계가 계속 blind였다고 주장하지 않는다. freshness 주장은 이 두 새 입력·oracle을 첫 live 사용 전에 고정했다는 제한된 범위에만 적용한다.
+두 과제는 C16 product 동결 이후 tuning과 분리된 authoring lane에서 작성했다. 작성 lane은 이전 live 결과·session·metrics를 열람하지 않았으며, 부모는 payload나 정답을 출력하지 않고 source/development/generic-grader 불변성, driver의 이름 두 개만 변경됐는지, 입력·evaluator·정답 hash와 선언된 작성 순서를 확인했다. 상세 정책과 oracle의 독립 검토는 별도 lane이 맡는다. Freshness 주장은 첫 live 사용 전 고정한 이 두 새 입력·oracle에 한정하며, 이전 사례나 향후 변경본으로 전이하지 않는다.
 
 각 과제는 software-domain `ExecutionContractV3`, exact goal confirmation, 전체 plan/review, 현재 revision에 대한 명시적 승인 뒤에만 실행한다. 과제별 JSON data와 `evaluator.mjs`는 immutable input이고, 선언된 JSON 결과 하나만 mutable output이며, 허용 명령은 정확히 `node evaluator.mjs` 하나다. generated code, 추가 파일·명령, web/network, credential, 설치, 배포, human/rubric acceptance 권한은 없다. Expected output은 evaluator와 별도로 고정하며 evaluator는 immutable data에서 결과를 다시 계산한다. Case test는 등록 여부뿐 아니라 주요 분기와 정렬·집계·edge scalar를 망가뜨린 복수의 오답이 evaluator와 독립 grader 양쪽에서 거절되는지도 확인한다.
 

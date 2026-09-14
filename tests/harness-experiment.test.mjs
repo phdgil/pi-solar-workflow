@@ -27,8 +27,8 @@ import {
 } from "../scripts/harness-experiment.mjs";
 
 const FRESH_HELD_OUT_CASES = [
-  "execute-config-overlay-heldout",
-  "execute-dependency-readiness-heldout",
+  "execute-module-alias-heldout",
+  "execute-access-matrix-heldout",
 ];
 
 function validExecuteContract(caseName = "execute-summary") {
@@ -324,7 +324,7 @@ function completedExecuteObservation(caseName, output) {
   return observation;
 }
 
-test("fixture catalog contains five development cases and two post-C14 fresh held-out cases", () => {
+test("fixture catalog contains five development cases and two post-C16 fresh held-out cases", () => {
   const listed = listHarnessFixtures();
   assert.deepEqual(listed.map(item => item.name), [
     "research-local",
@@ -1208,47 +1208,61 @@ test("fresh held-out evaluator and independent grading oracles reject materially
     assert.equal(gradeHarnessResult(caseName, completedExecuteObservation(caseName, expected)).passed, true);
 
     const alteredOutputs = [];
-    if (caseName === "execute-config-overlay-heldout") {
-      assert.deepEqual(new Set(expected.events.map(event => event.outcome)), new Set(["added", "updated", "unchanged", "removed", "absent"]));
-      assert.ok(expected.events.some(event => event.nextValue === 0));
-      assert.ok(expected.events.some(event => event.nextValue === false));
+    if (caseName === "execute-module-alias-heldout") {
+      assert.deepEqual(new Set(expected.resolutions.map(item => item.status)), new Set(["mapped", "unmapped"]));
+      assert.ok(expected.aliasUsage.some(item => item.count === 0));
+      assert.ok(expected.resolutions.some(item => item.status === "unmapped" && item.alias === null && item.target === null));
 
-      const falseWasDropped = structuredClone(expected);
-      delete falseWasDropped.config.telemetry;
-      alteredOutputs.push(falseWasDropped);
+      const longestPrefixWasLost = structuredClone(expected);
+      const nestedImport = longestPrefixWasLost.resolutions.find(item => item.id === "widget");
+      nestedImport.alias = "@core/";
+      nestedImport.target = "./src/core/ui/button.mjs";
+      longestPrefixWasLost.aliasUsage.find(item => item.key === "@core/").count += 1;
+      longestPrefixWasLost.aliasUsage.find(item => item.key === "@core/ui/").count -= 1;
+      alteredOutputs.push(longestPrefixWasLost);
 
-      const noOpWasCounted = structuredClone(expected);
-      noOpWasCounted.events.find(event => event.outcome === "unchanged").outcome = "updated";
-      noOpWasCounted.changedCount += 1;
-      alteredOutputs.push(noOpWasCounted);
+      const exactAliasBecamePrefix = structuredClone(expected);
+      const exactSubpath = exactAliasBecamePrefix.resolutions.find(item => item.id === "legacy-subpath");
+      exactSubpath.status = "mapped";
+      exactSubpath.alias = "legacy-api";
+      exactSubpath.target = "./compat/api.mjs/v2";
+      exactAliasBecamePrefix.aliasUsage.find(item => item.key === "legacy-api").count += 1;
+      exactAliasBecamePrefix.counts.mapped += 1;
+      exactAliasBecamePrefix.counts.unmapped -= 1;
+      alteredOutputs.push(exactAliasBecamePrefix);
 
-      const operationOrderWasLost = structuredClone(expected);
-      [operationOrderWasLost.events[0], operationOrderWasLost.events[1]] = [operationOrderWasLost.events[1], operationOrderWasLost.events[0]];
-      alteredOutputs.push(operationOrderWasLost);
+      const unusedAliasWasDropped = structuredClone(expected);
+      unusedAliasWasDropped.aliasUsage = unusedAliasWasDropped.aliasUsage.filter(item => item.count !== 0);
+      alteredOutputs.push(unusedAliasWasDropped);
+
+      const resolutionSortWasLost = structuredClone(expected);
+      resolutionSortWasLost.resolutions.reverse();
+      alteredOutputs.push(resolutionSortWasLost);
     } else {
-      assert.equal(caseName, "execute-dependency-readiness-heldout");
-      assert.deepEqual(new Set(expected.tasks.map(task => task.status)), new Set(["complete", "ready", "blocked"]));
-      assert.ok(expected.tasks.some(task => task.blockers.length > 1));
-      assert.ok(expected.tasks.some(task => task.status === "ready" && task.blockers.length === 0));
+      assert.equal(caseName, "execute-access-matrix-heldout");
+      assert.ok(expected.accounts.some(account => account.effective.length === 0));
+      assert.ok(expected.permissionUsage.some(item => item.accountCount === 0));
+      assert.ok(expected.accounts.some(account => account.denied.some(permission => !account.effective.includes(permission))));
 
-      const readyDependencyWasTreatedAsDone = structuredClone(expected);
-      const directlyBlocked = readyDependencyWasTreatedAsDone.tasks.find(task => task.id === "package");
-      directlyBlocked.status = "ready";
-      directlyBlocked.blockers = [];
-      readyDependencyWasTreatedAsDone.counts.ready += 1;
-      readyDependencyWasTreatedAsDone.counts.blocked -= 1;
-      alteredOutputs.push(readyDependencyWasTreatedAsDone);
+      const denyPrecedenceWasLost = structuredClone(expected);
+      denyPrecedenceWasLost.accounts.find(account => account.id === "bea").effective.unshift("build:run");
+      denyPrecedenceWasLost.permissionUsage.find(item => item.permission === "build:run").accountCount += 1;
+      alteredOutputs.push(denyPrecedenceWasLost);
 
-      const transitiveBlockersWereAdded = structuredClone(expected);
-      transitiveBlockersWereAdded.tasks.find(task => task.id === "announce").blockers.push("package");
-      alteredOutputs.push(transitiveBlockersWereAdded);
+      const unappliedDenyWasDropped = structuredClone(expected);
+      unappliedDenyWasDropped.accounts.find(account => account.id === "cy").denied = [];
+      alteredOutputs.push(unappliedDenyWasDropped);
 
-      const taskSortWasLost = structuredClone(expected);
-      taskSortWasLost.tasks.reverse();
-      alteredOutputs.push(taskSortWasLost);
+      const zeroUsagePermissionWasDropped = structuredClone(expected);
+      zeroUsagePermissionWasDropped.permissionUsage = zeroUsagePermissionWasDropped.permissionUsage.filter(item => item.accountCount !== 0);
+      alteredOutputs.push(zeroUsagePermissionWasDropped);
+
+      const accountSortWasLost = structuredClone(expected);
+      accountSortWasLost.accounts.reverse();
+      alteredOutputs.push(accountSortWasLost);
     }
 
-    assert.equal(alteredOutputs.length, 3);
+    assert.equal(alteredOutputs.length, 4);
     for (const altered of alteredOutputs) {
       const evaluatorFailure = evaluateFixtureOutput(caseName, altered);
       assert.notEqual(evaluatorFailure.status, 0);
