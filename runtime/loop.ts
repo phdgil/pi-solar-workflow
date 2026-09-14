@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { countPlanSteps, EXECUTION_CONTRACT_ID_PATTERN, PLANNER_SECTION_HEADINGS } from "./planner-output.ts";
 
 export const LOOP_LIMITS = Object.freeze({ cycles: 3, detours: 8, turns: 120, reviewRevisions: 3, roleCalls: 12, roleRepairs: 3, repairs: 3 });
 export const SNAPSHOT_STATE = "lite-output-snapshot-v1";
 export const PLAN_REVIEW_CORRELATION_NOTICE = "Planner, Approach Reviewer, and Critic use separate tool-free Solar Pro4 Max contexts. They are correlated same-model review signals, not independent proof; command gates and explicit human qualitative acceptance retain authority.";
 export const ROLE_ATTEMPT_TIMEOUT_MS = 180_000;
+const executionContractIdPattern = new RegExp(EXECUTION_CONTRACT_ID_PATTERN);
 export const PROVENANCE_LIMITS = Object.freeze({ bundleBytes: 1_024 * 1024, sourceExcerptBytes: 128 * 1024 });
 
 
@@ -82,6 +84,7 @@ export type SolarRoleRequest = {
   systemPrompt: string;
   prompt: string;
   bundle: RoleContextBundle;
+  responseSchema?: Record<string, unknown>;
   signal?: AbortSignal;
 };
 export type SolarRoleReceipt = {
@@ -212,7 +215,7 @@ function words(value: unknown, label: string, maximum = 12_000) {
 function identifier(value: unknown, label: string) {
   const result = words(value, label, 80);
   if (value !== result) throw new Error(`${label} must not contain surrounding whitespace.`);
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(result)) throw new Error(`Use a short stable identifier for ${label}.`);
+  if (!executionContractIdPattern.test(result)) throw new Error(`Use a short stable identifier for ${label}, matching ${EXECUTION_CONTRACT_ID_PATTERN}. Filenames belong in path fields, not IDs.`);
   return result;
 }
 
@@ -298,7 +301,7 @@ export function createRoleContextBundle(items: ProvenanceItem[], omitted: Array<
 
 export function validateSolarRoleRequest(value: unknown, expectedWorkflowId: string): SolarRoleRequest {
   if (!value || typeof value !== "object") throw new Error("Supply a complete SolarRoleRequest.");
-  exactObject(value, ["workflowId", "contextId", "role", "inputRevision", "planRevision", "repairOf", "systemPrompt", "prompt", "bundle", "signal"], "SolarRoleRequest");
+  exactObject(value, ["workflowId", "contextId", "role", "inputRevision", "planRevision", "repairOf", "systemPrompt", "prompt", "bundle", "responseSchema", "signal"], "SolarRoleRequest");
   const request = value as any;
   const workflowId = identifier(request.workflowId, "role-request workflow ID");
   if (workflowId !== expectedWorkflowId) throw new Error("Role request belongs to a different workflow.");
@@ -309,6 +312,9 @@ export function validateSolarRoleRequest(value: unknown, expectedWorkflowId: str
   if (inputRevision !== bundle.bundleRevision) throw new Error("Role request inputRevision must bind the exact provenance bundle.");
   const planRevision = request.planRevision === undefined ? undefined : revision(request.planRevision, "role-request plan revision");
   const repairOf = request.repairOf === undefined ? undefined : identifier(request.repairOf, "role-request repaired attempt ID");
+  if (request.responseSchema !== undefined && request.role !== "planner") throw new Error("Only Planner role requests may carry a response schema.");
+  if (request.responseSchema !== undefined && (!request.responseSchema || typeof request.responseSchema !== "object" || Array.isArray(request.responseSchema))) throw new Error("Planner responseSchema must be a JSON Schema object.");
+  const responseSchema = request.responseSchema === undefined ? undefined : structuredClone(request.responseSchema) as Record<string, unknown>;
   if (request.signal?.aborted) throw new Error("Already-aborted role requests must be rejected before reserving or creating a session.");
   return {
     workflowId,
@@ -320,6 +326,7 @@ export function validateSolarRoleRequest(value: unknown, expectedWorkflowId: str
     systemPrompt: words(request.systemPrompt, "the isolated role system prompt", 64 * 1024),
     prompt: words(request.prompt, "the isolated role prompt", 64 * 1024),
     bundle,
+    ...(responseSchema === undefined ? {} : { responseSchema }),
     ...(request.signal ? { signal: request.signal } : {}),
   };
 }
@@ -419,7 +426,7 @@ export function validateExecutionPlan(text: string): ExecutionContractV3 {
   for (const artifact of plan.artifacts) {
     if (artifact.gates.some((id: string) => !gates.has(id))) throw new Error(`${artifact.id}: unknown gate binding.`);
     for (const gateId of artifact.gates) if (!gateById.get(gateId)?.evidence.includes(artifact.id)) throw new Error(`${artifact.id}: gate ${gateId} must list the artifact as evidence too.`);
-    for (const gate of plan.gates) if (gate.evidence.includes(artifact.id) && !artifact.gates.includes(gate.id)) throw new Error(`${artifact.id}: descriptor and gate evidence bindings must be reciprocal.`);
+    for (const gate of plan.gates) if (gate.evidence.includes(artifact.id) && !artifact.gates.includes(gate.id)) throw new Error(`${artifact.id}: descriptor and gate evidence bindings must be reciprocal. Gate ${gate.id} lists this artifact as evidence, so its descriptor gates must include ${gate.id}, even for immutable evidence.`);
     if (artifact.acceptance === "command" && !artifact.gates.some((id: string) => gateById.get(id)?.kind === "command")) throw new Error(`${artifact.id}: command acceptance needs a bound command gate.`);
     if (artifact.acceptance === "human" && !artifact.gates.some((id: string) => gateById.get(id)?.kind === "rubric")) throw new Error(`${artifact.id}: human acceptance needs a bound qualitative rubric.`);
   }
@@ -503,7 +510,7 @@ export function validateExecutionPlan(text: string): ExecutionContractV3 {
     words(coverage.explanation, `${requirementId} coverage explanation`);
   }
   const producedArtifacts = plan.artifacts.filter((artifact: ArtifactDescriptor) => producers.has(artifact.id));
-  if (!Array.isArray(selfCheck?.artifactCoverage) || selfCheck.artifactCoverage.length !== producedArtifacts.length) throw new Error("Self-check artifactCoverage must contain every produced artifact exactly once.");
+  if (!Array.isArray(selfCheck?.artifactCoverage) || selfCheck.artifactCoverage.length !== producedArtifacts.length) throw new Error(`Self-check artifactCoverage must contain every produced artifact exactly once, and no immutable input evidence. Expected artifact IDs: ${producedArtifacts.map((artifact: ArtifactDescriptor) => artifact.id).join(", ")}.`);
   const selfArtifacts = new Set<string>();
   for (const coverage of selfCheck.artifactCoverage) {
     exactObject(coverage, ["artifactId", "stepId", "gateIds", "explanation"], "self-check artifact coverage");
@@ -803,6 +810,67 @@ export function validateFindingResolutions(value: unknown, findings: Array<PlanF
   });
 }
 
+export function decodePlannerOutput(output: string, workflow: any): { planMarkdown: string; contract: ExecutionContractV3; resolutions: FindingResolution[] } {
+  visibleOutputRevision(output, "the exact visible Planner output");
+  const payload = parseVisibleJson(output, "the exact visible Planner output") as any;
+  exactObject(payload, ["status", "sections", "contract", "resolutions"], "Planner output");
+  if (payload.status !== "ready") throw new Error("Planner output status must be ready.");
+
+  const sectionKeys = PLANNER_SECTION_HEADINGS.map(([key]) => key);
+  exactObject(payload.sections, sectionKeys, "Planner output sections");
+  const sections = PLANNER_SECTION_HEADINGS.map(([key, heading]) => {
+    const content = words(payload.sections[key], `the Planner ${heading} section`);
+    const lines = content.split(/\r?\n/);
+    const hasSetextHeading = lines.some((line, index) => index > 0 && Boolean(lines[index - 1]?.trim()) && /^ {0,3}(?:=+|-+)[ \t]*$/.test(line));
+    if (/^ {0,3}#{1,2}(?:[ \t]+|$)/m.test(content) || hasSetextHeading) throw new Error(`Planner ${heading} section cannot inject a competing top-level heading.`);
+    if (/^ {0,3}(?:`{3,}|~{3,})/m.test(content)) throw new Error(`Planner ${heading} section cannot inject a Markdown fence.`);
+    return { heading, content };
+  });
+  const steps = sections.find(section => section.heading === "Steps and validation")!.content;
+  const stepCount = countPlanSteps(steps);
+  if (!stepCount || stepCount > 40) throw new Error(`Planner output needs one to 40 visibly bounded steps; found ${stepCount}.`);
+  if (!payload.contract || typeof payload.contract !== "object" || Array.isArray(payload.contract)) throw new Error("Planner contract must be an object-valued ExecutionContractV3.");
+
+  const contractText = JSON.stringify(canonicalValue(payload.contract), null, 2);
+  const planMarkdown = [
+    "# Plan",
+    `Status: ${payload.status}`,
+    "",
+    ...sections.flatMap(({ heading, content }) => [`## ${heading}`, content, ""]),
+    "## Execution contract",
+    "```json",
+    contractText,
+    "```",
+    "",
+  ].join("\n");
+  const contract = validateExecutionPlan(planMarkdown);
+  if (!Array.isArray(payload.resolutions)) throw new Error("Planner output must include a resolutions array, including [] for an initial plan.");
+
+  const findings = workflow?.planning?.reviewFindings ?? [];
+  if (!Array.isArray(findings)) throw new Error("Current Planner review findings must be an array.");
+  if (!findings.length && payload.resolutions.length) throw new Error("An initial Planner output cannot invent finding resolutions.");
+  const toPlanRevision = digest(planMarkdown);
+  if (findings.length && toPlanRevision === workflow?.revision) throw new Error("Current review findings require a materially changed full plan, not a new receipt over identical bytes.");
+  if (workflow?.plan && workflow?.gap && toPlanRevision === workflow.revision) throw new Error("The current revision/recovery gap requires changed plan bytes, not a new receipt over the identical plan.");
+  if (!findings.length) return { planMarkdown, contract, resolutions: [] };
+
+  const fromPlanRevision = revision(workflow?.revision, "the current plan revision");
+  const candidates = payload.resolutions.map((item: any) => {
+    exactObject(item, ["findingId", "status", "changedLocations", "explanation"], "Planner finding resolution");
+    return {
+      version: 1 as const,
+      findingId: item.findingId,
+      fromPlanRevision,
+      toPlanRevision,
+      status: item.status,
+      changedLocations: item.changedLocations,
+      explanation: item.explanation,
+    };
+  });
+  const resolutions = validateFindingResolutions(candidates, findings, { fromPlanRevision, toPlanRevision });
+  return { planMarkdown, contract, resolutions };
+}
+
 function reusableResults(current: any, contract: ExecutionContractV3, nextArtifactRevision: string) {
   if (!current.plan?.contract || current.artifactTableRevision !== nextArtifactRevision) return {};
   if (canonicalDigest(current.plan.contract.requirements) !== canonicalDigest(contract.requirements)) return {};
@@ -824,17 +892,19 @@ function reusableResults(current: any, contract: ExecutionContractV3, nextArtifa
   return results;
 }
 
-export function beginPlanRevision(workflow: any, artifact: { path: string; text: string; revision?: string }, options: { plannerReceipt: SolarRoleReceipt; inputRevision: string; visibleOutput: string; resolutions?: FindingResolution[] }) {
+export function beginPlanRevision(workflow: any, artifact: { path: string; text: string; revision: string }, options: { plannerReceipt: SolarRoleReceipt; inputRevision: string; visibleOutput: string; resolutions?: FindingResolution[] }) {
   const current = initializeLoop(workflow);
   if (current.stage !== "plan" || !["active", "revision_required"].includes(current.status)) throw new Error("A Planner revision can replace only the current active or revision-required plan stage.");
   const expectedPlanPath = path.resolve(current.cwd, ".solar-workflow", current.id, "plan.md");
   const submittedPlanPath = typeof artifact?.path === "string" ? path.resolve(artifact.path) : "";
   const foldPath = (value: string) => process.platform === "win32" ? value.toLocaleLowerCase("en-US") : value;
   if (foldPath(submittedPlanPath) !== foldPath(expectedPlanPath)) throw new Error("Only the controller-reserved per-workflow plan.md artifact can enter isolated review.");
+  const decoded = decodePlannerOutput(options?.visibleOutput as string, current);
+  if (artifact?.text !== decoded.planMarkdown) throw new Error("Plan artifact bytes do not match the canonical plan rendered from the exact visible Planner output.");
   if (!/^Status: ready\s*$/m.test(artifact.text)) throw new Error("Controller-owned plan.md must have Status: ready before isolated reviews.");
-  const contract = validateExecutionPlan(artifact.text);
+  const contract = decoded.contract;
   const planRevision = digest(artifact.text);
-  if (artifact.revision !== undefined && artifact.revision !== planRevision) throw new Error("Plan artifact revision does not match its exact current bytes.");
+  if (artifact.revision !== planRevision) throw new Error("Plan artifact revision does not match its exact current bytes.");
   if (current.budgets.reviewRevisions >= current.limits.reviewRevisions) throw new Error(`Plan review-revision budget exhausted (${current.limits.reviewRevisions}); preserve the current plan, findings, resolutions, and best artifacts, then pause for a user decision.`);
   const plannerReceipt = validateRoleReceipt(options?.plannerReceipt, {
     workflowId: current.id,
@@ -846,8 +916,14 @@ export function beginPlanRevision(workflow: any, artifact: { path: string; text:
   assertReceiptAttempt(current, plannerReceipt);
   const previousFindings = current.planning?.reviewFindings ?? [];
   if (previousFindings.length && planRevision === current.revision) throw new Error("Current review findings require a materially changed full plan revision, not a new receipt over identical bytes.");
-  const resolutions = previousFindings.length ? validateFindingResolutions(options?.resolutions ?? [], previousFindings, { fromPlanRevision: current.revision, toPlanRevision: planRevision }) : [];
-  if (!previousFindings.length && options?.resolutions?.length) throw new Error("No current findings accept a resolution mapping.");
+  let suppliedResolutions: FindingResolution[];
+  if (previousFindings.length) suppliedResolutions = validateFindingResolutions(options?.resolutions ?? [], previousFindings, { fromPlanRevision: current.revision, toPlanRevision: planRevision });
+  else {
+    if (options?.resolutions !== undefined && (!Array.isArray(options.resolutions) || options.resolutions.length)) throw new Error("No current findings accept a resolution mapping.");
+    suppliedResolutions = [];
+  }
+  if (canonicalDigest(suppliedResolutions) !== canonicalDigest(decoded.resolutions)) throw new Error("Supplied finding resolutions do not match the mappings derived from the exact visible Planner output.");
+  const resolutions = decoded.resolutions;
   const tableRevision = artifactTableRevision(contract.artifacts);
   const descriptorChanged = Boolean(current.artifactTableRevision && current.artifactTableRevision !== tableRevision);
   const results = descriptorChanged ? {} : reusableResults(current, contract, tableRevision);

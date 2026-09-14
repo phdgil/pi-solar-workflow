@@ -37,7 +37,7 @@
 |---|---|---|---|
 | researcher | 증거 수집·상충·불확실성. 사용자 선호 결정이나 제품 수정 금지 | research context → ResearchContractV2 tool submission | 메인 세션에 현재 역할만 바인딩; host가 원 caller에 반환 |
 | interviewer | 가장 큰 의사결정 gap 1개, 답변·정정 재사용. 구현·임의 confirm 금지 | 현재 answers/research/readiness → InterviewRoundV2 | 메인 세션; 사용자와 대화, factual gap은 researcher detour |
-| planner | 실행 가능한 전체 계약 작성·finding 해결. 제품 작업·자기 승인 금지 | provenance+findings → planMarkdown/resolutions JSON | fresh tool-free Pi 세션; host만 plan 저장 |
+| planner | 실행 가능한 전체 계약 작성·finding 해결. 제품 작업·자기 승인 금지 | provenance+findings → status/sections/contract/resolutions JSON | fresh tool-free Pi 세션; host만 Markdown 렌더링·저장 |
 | approach_reviewer | 기술적 실현 가능성 또는 연구 방법·자료 적합성. 스타일 재작성 금지 | 현재 전체 plan+provenance → PlanReview | fresh tool-free Pi 세션; host가 finding을 Planner에게 전달 |
 | critic | 원 의도·범위·실패 조건·검증이 거짓 성공을 잡는지. 설계자 역할 금지 | 현재 전체 plan+provenance → PlanReview | fresh tool-free Pi 세션; 판단은 합의/객관 증명이 아님 |
 | executor | 현재 승인된 한 step의 실제 산출물 생성·수리. 권한 확대 금지 | current step+capabilities+diagnostics → solar_step_done | 메인 세션의 guarded tools; host가 gate 실행·결과 커밋 |
@@ -177,6 +177,37 @@ role-only JSON 생성 테스트와 full controller/Pi loop 결과는 반드시 �
 최종 품질의 미검증 상태를 기록하기 위해 **별도 후속 held-out 검증**만 수행한다. 이는 원래 90분 프로토콜 안에서 완료한 검증으로 부르지 않는다. 수정된 source와 driver를 동결하고 A1/최종 후보를 미사용 inventory fixture에서 3쌍 교대 실행한다. 양쪽 모두 run당 180초, 후속 batch 20분의 동일 상한을 적용한다. 이는 180초 안의 bounded full-loop 관측이며, runtime의 모든 개별 role deadline을 끝까지 소진한 평가가 아니다. 결과를 본 뒤 이 heldout에 맞춰 skill을 고치거나 독립 검증을 재사용하지 않는다. 안전/품질이 입증되지 않으면 실험 구현으로만 제공하고 production 채택을 권고하지 않는다.
 
 후속 검증은 양쪽 0/3 task 성공으로 끝났다. 마지막 run에서 발견한 public skill 경로/dispatcher read 통합 결함은 안전한 배포를 위해 수정했다. 따라서 동결된 평가 source와 현재 source는 다르며, 수정본에 위 heldout의 독립 검증 지위를 부여하지 않는다. 이 프로토콜 이탈과 정확한 source hash, 실패·token 급증을 [실측 보고서](HARNESS_EXPERIMENTS.md)에 보존한다. 성능 튜닝을 계속하거나 같은 holdout을 재사용하지 않는다.
+
+### 사용자 승인에 따른 168시간 재개
+
+2026-09-14 사용자 지시로 별도 실험을 재개했다. 기록된 시작은 2026-09-14 13:11:29.631 KST, 종료 상한은 2026-09-21 13:11:29.631 KST다. 이는 호스트 시계 기반 운영 deadline이며 이전 90분 실험의 기록을 소급 변경하지 않는다. 로컬 `.experiments/extended-168h/mission.json`에 원래 deadline을 보존하며 재시작이나 후보 변경으로 연장하지 않는다.
+
+- 이번 캠페인은 이전 90분/120-call/4-candidate 및 두 후보 실패 종료 규칙을 대신하여 최대 168시간 안에서 결함 기반 반복을 수행한다. 모델 호출·부분 token·오류·수정 이력은 계속 기록한다.
+- 종료 조건은 동일 source/protocol로 선언된 모든 개발 과제와 새로운 held-out 과제를 각각 3회 연속 통과하고, 안전 위반과 미해결 알려진 결함이 없는 것이다. 이는 제한된 과제군의 관측 결과이지 보편적 무결함 증명이 아니다.
+- 이미 관찰한 inventory heldout은 개발 자료로만 사용할 수 있다. 새 heldout은 후보 동결 전에 분리하고, 실패를 본 뒤 수정하면 그 세트의 독립성을 소진한 것으로 기록한다.
+- 최초 진단은 run당 20분을 허용한다. 기존 180초 개별 role deadline과 controller 안전/승인/시도 예산은 그대로 둔다. 이후 비교에서도 양쪽의 동일 상한과 실행 protocol hash를 맞춘다.
+- 전체 deadline을 넘는 run은 시작하지 않으며, 진행 중 run도 남은 시간으로 제한한다. 시간 소진·인증 장애·환경 중단은 수렴으로 기록하지 않는다.
+- 기존 채택 기준은 유지한다. 결함 미발견과 baseline 대비 우월성은 별개의 판정이다. 합성 fixture 밖 사용자 작업, human/rubric acceptance, 설치·배포 권한은 확장하지 않는다.
+
+### 재개 캠페인의 Planner wire 보정
+
+이전 후보의 중첩 fence 오류에 이어 C3/C4에서는 ID, 상호 참조, initial-resolution 오류가 관측됐다. 별도 capability probe에서 설치된 Pi와 실제 Solar Pro4 Max가 native `response_format: json_schema`를 지원함을 확인했다. 다음은 기존 설계에 대한 범위가 제한된 구현 결정이며, timeout 해결이나 품질 향상을 미리 주장하지 않는다. 상호 참조와 의미적 정확성은 여전히 별도 V3 검증 대상이다.
+
+1. 내부 Planner 응답은 `status`, 여섯 개의 명시적 `sections`, object-valued `contract`, `resolutions`로 교체한다. 과거 `planMarkdown` 응답을 읽는 fallback은 두지 않는다. 모델이 모든 실질 내용을 제공하고, host는 고정 heading/fence/JSON 배치만 렌더링한다.
+2. 한 공유 decoder/renderer를 후보 검증과 core commit에서 사용한다. 원본 응답 hash, 그 원본에서 렌더링한 Markdown과 실제 산출물의 완전 일치, 같은 원본에서 유도된 resolution의 일치를 확인한다. 기본값·ID·evidence·승인 결과를 만들어 채우지 않는다.
+3. Planner 세션에만 검증된 native JSON Schema를 명시적으로 전달한다. 현재 tool inventory와 finding IDs는 생성 형식을 제한할 뿐 권한을 부여하지 않는다. provider 출력 뒤 기존 V3 의미·권한 검증을 그대로 수행한다.
+4. raw receipt, 전체 Markdown revision, 두 fresh reviewer, 사용자 승인, tool-free 세션, Solar Max, 180초 deadline 및 모든 시도 예산을 유지한다. regression/installed-Pi 검증 뒤 새 source를 동결하고 별도 실측한다.
+
+### C14 동결 이후 fresh held-out
+
+298개 test와 installed-Pi smoke를 마친 C14 product source는 `.experiments/extended-168h/candidate-014/snapshot.json`에 동결했다(snapshot file SHA-256 `a556f7a17ce86ec752753fb08cd5290bed3225e5813b0ea86b20396cfe52d40e`). 이 동결 뒤 현재 active fixture registry는 기존 개발 과제 5개의 정의와 데이터를 그대로 유지하고, 이전의 두 execute held-out을 active set에서 제외한 뒤 다음 두 과제를 새로 사용한다.
+
+- `execute-config-overlay-heldout`: 순서가 있는 설정 연산을 적용하고 추가·변경·무변경·삭제·부재 분기, `false`/0 보존, 최종 키 정렬, 연산별 변경 ledger와 집계를 독립 검사한다.
+- `execute-dependency-readiness-heldout`: 완료/대기 상태와 직접 의존성만으로 완료·실행 가능·차단을 판정하고, 빈 의존성·모두 완료·미완료 직접 의존성·복수 blocker·정렬 분기를 독립 검사한다. 실행 가능한 대기 의존성을 완료로 간주하거나 transitive blocker를 만들어 내지 않는다.
+
+두 과제는 C14 동결 이후 runtime tuning과 분리된 authoring lane에서 작성했으며 어떤 이전 live run outcome이나 result/session/metrics artifact도 열람하거나 사용하지 않았다. 다만 이전 held-out 요청 설명이 이미 노출된 사실 때문에 그 설계가 계속 blind였다고 주장하지 않는다. freshness 주장은 이 두 새 입력·oracle을 첫 live 사용 전에 고정했다는 제한된 범위에만 적용한다.
+
+각 과제는 software-domain `ExecutionContractV3`, exact goal confirmation, 전체 plan/review, 현재 revision에 대한 명시적 승인 뒤에만 실행한다. 과제별 JSON data와 `evaluator.mjs`는 immutable input이고, 선언된 JSON 결과 하나만 mutable output이며, 허용 명령은 정확히 `node evaluator.mjs` 하나다. generated code, 추가 파일·명령, web/network, credential, 설치, 배포, human/rubric acceptance 권한은 없다. Expected output은 evaluator와 별도로 고정하며 evaluator는 immutable data에서 결과를 다시 계산한다. Case test는 등록 여부뿐 아니라 주요 분기와 정렬·집계·edge scalar를 망가뜨린 복수의 오답이 evaluator와 독립 grader 양쪽에서 거절되는지도 확인한다.
 
 ## 7. 검증과 완료 조건
 

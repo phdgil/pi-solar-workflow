@@ -10,6 +10,12 @@ The four public skills are stage dispatchers. The package's `harness/agents.json
 
 Research, interview and execution bind their current role to the main-session system prompt; this does not create independent child contexts for those stages. Planning loads the Planner and the two distinct reviewer skills into the existing isolated Pi sessions while keeping SDK `noSkills` and tool isolation enabled. Role-specific procedures are not duplicated in the public stage skills or controller constants.
 
+Main instructions use a host-owned frame at turn entry and every provider request, including automatic continuations. The current role is explicitly loaded without a stage cache; stale owned frames are replaced without removing unrelated system content. Malformed bindings fail closed. Stopped conversations retain neither the role frame nor the interview tool budget.
+
+Interview reads reject canonical controller/Pi/package resources and the exact live session file before content access. The exact current, non-aliased host research artifact is the controller-owned exception. Ordinary authorized evidence, including JSONL and session-named application files, remains readable; a session-file container is not wholly private. Denials remain errors and consume the interview budget. This boundary is not a general filesystem sandbox or an interpreter of natural-language read permissions.
+
+On Windows, private identity comparisons include the backing file or directory of NTFS streams, including credential dotfiles. Exact current-session protection also recognizes hard links using valid nonzero bigint device/file IDs, without reading content or enumerating private trees. Ordinary evidence streams and unrelated siblings remain allowed. A file-symlink-to-stream composition was not physically verified on the development host because link creation returned `EPERM`.
+
 The main planning dispatcher has only `solar_plan_ready` and `solar_revisit`, not filesystem `read`. The host selects provenance and loads private worker skills; the model must not locate those package files itself.
 
 At the interview tool boundary, `currentGapId` is required: explicit `null` for a substantively ready report, or the exact nonempty readiness gap/contradiction ID otherwise. The host converts null to the existing domain V2 absent-gap representation before running all readiness, source and freshness validators. Null cannot turn an unresolved report into a ready one.
@@ -121,7 +127,11 @@ solar_revisit({stage:'interview',gap:'user decision or conflict',evidence:'answe
 
 Planner, Approach Reviewer, and Critic each run in a fresh `SessionManager.inMemory(...)` Pi session with supported nonpersistent settings, explicit `solar-pro4`, `thinkingLevel: "max"`, and `tools:[]`. Extension, skill, prompt-template, and context-file discovery are disabled. Children cannot browse the workspace or inherit hidden main-session reasoning.
 
-The controller supplies a canonical, hashed provenance bundle containing mandatory requirements, research, answers, current plan/findings, and selected source excerpts. The serialized UTF-8 bundle is capped at 256 KiB and each optional source excerpt at 32 KiB. Mandatory contracts are never silently truncated; missing or oversized evidence creates a visible research/revision blocker.
+The controller supplies a canonical, hashed provenance bundle containing mandatory requirements, research, answers, current plan/findings, and selected source excerpts. The serialized UTF-8 bundle is capped at 1 MiB and each optional source excerpt at 128 KiB. Mandatory contracts are never silently truncated; missing or oversized evidence creates a visible research/revision blocker.
+
+The bundle also records configured Pi tool names as environment evidence, not authority or a catalog of shell programs. Plans using unavailable capability tool names are rejected; required tool availability is rechecked at approval and execution boundaries. No nonexistent name is mapped to a fallback tool.
+
+Active workflow requests set `parallel_tool_calls: false` at the supported provider-request boundary. This prevents parallel generation from contradicting the controller's solo control-call rule. Dormant workflows do not change ordinary provider requests, and this setting never grants a tool or approves its arguments.
 
 Each creation-plus-prompt attempt has one 180,000 ms deadline. The controller reserves budget before creation, rechecks workflow/input/plan identity after every await, ignores late output, and aborts/disposes obtained sessions. Defaults are:
 
@@ -130,6 +140,14 @@ Each creation-plus-prompt attempt has one 180,000 ms deadline. The controller re
 - 3 review revisions.
 
 A repair consumes one session attempt and one repair. These counters do not represent HTTP calls, provider retries, tokens, throughput, rate limits, or billing quotas.
+
+Repair context retains the latest completed rejected response and its semantic error across later no-output failures, while `repairOf` still identifies the immediately preceding eligible attempt. Prior-output context remains bounded to 16,000 characters: shorter responses remain verbatim; larger responses use explicitly labeled verbatim ranges prioritizing contract, coverage, resolutions, and tail content. Omitted ranges are disclosed, malformed JSON stays untrusted text, and the stored original output is never rewritten.
+
+Only an assistant response with `stopReason: "stop"` can produce a role output receipt. Token-limited (`length`), missing, aborted, or unknown completion states fail closed even if the visible bytes resemble complete JSON. A receipt still does not replace independent contract validation or the required reviews.
+
+The Planner returns native-schema-constrained JSON with `status`, six model-authored `sections`, an object-valued `contract`, and `resolutions`. The host renders fixed headings and one canonical contract fence; it does not supply missing substantive content. The old nested `planMarkdown` wire is rejected. Core commit checks bind untouched raw response bytes to the exact rendered Markdown and the same payload's resolutions. Native schema validity does not replace V3 reference, capability, review, or approval checks.
+
+Initial prerequisite limitations remain explicit in feasibility and remaining uncertainties for review; a structurally ready candidate is not execution approval. A blocked resolution is available only for a supplied current finding during revision, never an invented initial finding.
 
 The Approach Reviewer and Critic see the full current plan bundle in distinct contexts. The former checks domain-specific approach and feasibility; the latter checks whole-plan scope, risk, verification, and acceptance. Their receipts bind role, context, input revision, plan revision, model, Max thinking, attempt, and output revision. Because all roles use Solar Pro4 Max and controller-selected evidence, the reviews are correlated signals, not independent proof.
 

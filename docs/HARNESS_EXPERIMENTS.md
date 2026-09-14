@@ -92,9 +92,9 @@ Runner는 exact Pi invocation, 선택된 네 skill의 `sourceInfo.path`, 모델/
 
 Main-session tokens와 isolated-role attempts는 별도로 기록한다. main 응답기록에는 abort/error 기록도 포함되며 정확한 HTTP 호출 수와 같다고 가정하지 않는다. in-memory role session의 tokens는 현재 controller에서 관측되지 않아 null이다. role attempt를 완결된 모델 응답이나 정확한 HTTP 호출 수로 바꾸어 계산하지 않는다. 네트워크 진단과 loopback smoke도 판단용 latency 표본에 섞지 않는다.
 
-총 20개 runner 실행에서 main 응답기록 131개와 Planner SDK attempt 11개가 관측되었다. 과제별로 research 8회, development execution 4회, planning-only 2회, inventory held-out 6회다. 이 합계 밖의 연결/transport 진단은 품질 비교 분모에 넣지 않았다. `interview-correction`은 별도 실제-model case로 실행하지 못했고, 실제 흐름이 리뷰/실행까지 완료되지 않아 Approach Reviewer, Critic, Executor의 live task 품질도 입증하지 못했다.
+이전 캠페인의 총 20개 runner 실행에서 main 응답기록 131개와 Planner SDK attempt 11개가 관측되었다. 과제별로 research 8회, development execution 4회, planning-only 2회, inventory held-out 6회다. 이 합계 밖의 연결/transport 진단은 품질 비교 분모에 넣지 않았다. `interview-correction`은 별도 실제-model case로 실행하지 못했고, 실제 흐름이 리뷰/실행까지 완료되지 않아 Approach Reviewer, Critic, Executor의 live task 품질도 입증하지 못했다.
 
-## 최종 source 회귀 검증
+## 이전 배포본 `3da9b58` 회귀 검증
 
 - `npm test`: **236 tests 통과**, 실패/skip 없음.
 - `npm run test:pi`: 설치된 Pi 0.85.1의 loopback 통합 검사 통과. 전체 agent/skill prompt 전송, 단계 전환, planning dispatcher의 read 부재, 격리된 세 planning role의 도구 부재, exact goal confirmation, host-owned research, planning-only 종료를 검사했다.
@@ -102,3 +102,121 @@ Main-session tokens와 isolated-role attempts는 별도로 기록한다. main �
 - `npm pack --dry-run --ignore-scripts --json`: 36개 배포 파일에서 loader/registry/6개 전용 skill/설계·실측 문서 포함을 확인했다. 원문 실험·credential 파일은 제외되었다. 실제 npm publish나 전역 설치는 하지 않았다.
 
 이 검증은 post-holdout 통합 수정의 source/SDK 동작 증거다. 실제 Solar의 성공한 full-loop 결과를 대신하지 않는다.
+
+## 168시간 재개 캠페인 — 진행 중
+
+사용자 지시에 따라 2026-09-14 13:11:29.631 KST부터 최대 168시간으로 재개했다. 원래 deadline은 2026-09-21 13:11:29.631 KST이며 재시작으로 연장하지 않는다. 종료 기준과 이전 실험과의 분리는 [설계 문서](HARNESS_DESIGN.md)에 기록했다. 아래 진단은 서로 다른 과제/protocol이므로 paired 성능 비교가 아니다.
+
+| 진단 | task 성공 | assertions | main 응답기록 | main tokens | role attempts | elapsed ms |
+|---|---|---:|---:|---:|---:|---:|
+| 현재 수정본 execute-summary / 1 | 아니오 | 10/16 | 16 | 169261 | 4 | 801958 |
+| A1 plan-software / 1 | 아니오 | 8/12 | 2 | 10322 | 4 | 534013 |
+| C1 plan-software / 1 | 아니오 | 9/12 | 2 | 7047 | 5 | 716347 |
+| C1 execute-summary / transport 진단 | 아니오 | 8/16 | 2 | 7605* | 0 | 1200228 |
+| C2 execute-summary / transport 진단 | 아니오 | 11/16 | 5 | 51130 | 7 | 984141 |
+| C3 execute-summary / 1 | 아니오 | 10/16 | 8 | 100526 | 4 | 654104 |
+| C4 plan-software / 1 | 아니오 | 8/12 | 1 | 3384 | 4 | 514602 |
+| C5 plan-software / 1 | 아니오 | 8/12 | 1 | 3439 | 4 | 570256 |
+| C6 plan-software / 1 | 아니오 | 8/12 | 1 | 3456 | 4 | 704768 |
+| C7 plan-software / 1 | 아니오 | 8/12 | 1 | 3338 | 4 | 519970 |
+| C8 plan-software / 1 | 예 | 12/12 | 1 | 3467 | 3 | 488706 |
+| C8 execute-summary / 1 | 아니오 | 11/16 | 5 | 41917 | 11 | 703294 |
+| C9 execute-summary / 1 | 아니오 | 10/16 | 6 | 50394 | 4 | 613895 |
+| C9 plan-software / transport 진단 | 아니오 | 8/12 | 1 | 3464 | 6 | 660827 |
+| C10 execute-summary / 1 | 아니오* | 15/16 | 10 | 140910 | 4 | 418623 |
+
+첫 두 진단은 run당 20분을 허용했지만 유효한 계획 revision 없이 멈췄다. 현재 수정본에서는 반복 인터뷰 직렬화/증거 ID 오류 뒤 Planner가 timeout → text 반환 → text 반환 → timeout을 기록했다. 두 text 모두 outer JSON은 유효했지만 `planMarkdown` 내부 ExecutionContractV3의 닫는 fence가 없었다. 별도 검증 step의 빈 outputs와 허용되지 않은 추가 command도 발견됐다. 최종 차단은 role-call 전체 예산이 아니라 repair 3회 소진이었다. 권한 밖 작업과 승인 전 mutation은 관측되지 않았다.
+
+첫 진단의 저장된 `provider_failure`는 role deadline을 provider 원인으로 합친 당시 분류명이다. 원문은 수정하지 않았다. 이후 runner는 role timeout/cancellation만으로는 provider 원인을 단정하지 않고 `role_session_interrupted`로 분류한다. 실패 기록이나 실패 assertion을 제거하지는 않는다.
+
+- 현재 수정본 진단 protocol: `a3d145608041207e0eee0be09ed4bb439c9109f2e97d768c3dc4fc96413f8012`
+- A1 진단 protocol: `b969b3885463fe1702fc231e57d14cd534bb2d2db1e149f6e12e6af9de0cf197`
+- 절대 상한을 적용하는 runner 옵션: `--deadline-at 2026-09-21T04:11:29.631Z`. 반복마다 남은 시간을 다시 계산하고 종료 정리용 30초를 예약한다.
+
+정적 점검에서는 role 출력 수집기가 `length`와 알 수 없는 종료 상태도 receipt로 받아들이는 별도 결함을 발견했다. 정상 `stop`만 허용하도록 강화했다. 이전 두 출력의 실제 stop reason은 해당 receipt에 보존되지 않았으므로 이 결함을 그 두 실패의 원인이라고 단정하지 않는다.
+
+현재는 재현 결함 수정 단계다. 위 실패를 수렴이나 우월성으로 해석하지 않으며, 새 수정본의 검증 결과는 별도로 기록한다.
+
+### 재개 후 추가 발견
+
+- C1은 처음으로 실제 세 planning role의 현재 revision 리뷰를 거쳐 `planning_complete`에 도달했다. 그러나 존재하지 않는 Pi 도구명 `command`를 선언했고 main dispatcher가 금지된 shell 호출을 시도했다. 유효한 최종 task 성공은 아니다. C2에는 실제 `getAllTools()` 목록을 hash-bound 환경 근거로 제공하고 계획·승인·실행 경계에서 가용성을 확인하는 검사를 추가했다. 도구명 목록은 명령 실행 권한이나 설치된 프로그램 목록이 아니다.
+- C1 transport 진단에서는 한 assistant 응답이 read 1개와 interview report 80개를 계속 생성했다. 20분 run deadline까지 끝나지 않았다. `*7605`는 완료되어 usage가 남은 앞선 응답의 tokens일 뿐이며, 중단된 대형 응답 비용은 포함하지 않는다. 이 수치를 낮은 비용으로 해석할 수 없다.
+- C2에서 활성 workflow의 실제 Upstage 요청에 `parallel_tool_calls:false`가 전달됨을 확인했다. 인터뷰 보고와 exact goal confirmation까지 진행했으며, 해당 반복 report 생성 현상은 그 run에서 재발하지 않았다. 모델/thinking 및 출력 token 상한은 변경하지 않았다. [Upstage의 공식 tool-calling 예제](https://console.upstage.ai/docs/capabilities/generate/tool-calling)도 이 필드를 지원한다.
+- C2는 이후 계획의 추가 prerequisite shell gates 때문에 승인되지 않았다. Approach Reviewer가 Pi 도구 목록에 interpreter 이름이 없다는 것을 가용성 문제로 취급했고, Planner는 추가 probe를 도입했다. Critic은 추가 gate command의 범위 위반을 놓쳤다. 현재 수정은 도구 API와 프로그램의 구분, 기존 허용 gate로 처리되는 명시적 runtime 가정, **gate command도 동일한 권한 검사 대상**이라는 점을 분명히 한다. 알려진 비호환성이나 실제 필요한 권한 부족을 무시하거나 자동 승인하지 않는다.
+- 일부 isolated role 요청은 180초 deadline 직전까지 SSE data를 계속 수신했다. 따라서 단순한 무응답 네트워크 대기라고 단정하지 않는다. 이전 observer는 배열형 message content와 일부 reasoning delta 필드를 집계하지 못했으므로 당시 role label/zero-thinking counters를 근거로 역할별 비용이나 무사고를 주장하지 않는다. 원문과 해당 observer의 hash 일치 source를 보존하고 진단 집계기를 수정했다.
+
+C1/C2의 driver/grader protocol은 `5eedebc5c387c11598346dcd2a02f680053d8f0b27d3b30700178f8173545c27`이다. Transport observer를 붙인 실행은 진단용이며 무계측 paired 비용 비교에 섞지 않는다. C2 source의 회귀 검사 246 tests와 설치된 Pi loopback은 통과했지만, 위 실제 실행은 실패했다.
+
+C3/C4도 같은 driver/grader protocol을 사용했다. C3 source는 `2b92076c0cc0a932ac8f2307cdaf2549e2393824be7ac86de627e3109838cea4`, C4 source는 `581642c2fc43853ff0807110463848da5bbda63aa8ebddf9131df4bad9f20dc7`이다. C3는 파일명을 artifact ID로 써서 거절됐고, C4는 descriptor/gate의 상호 참조 불일치와 initial planning의 가짜 finding resolution 때문에 거절됐다. 양쪽 모두 role timeout도 있었고 유효한 계획은 저장되지 않았다. C4의 247개 회귀 검사 및 installed-Pi loopback 통과는 이 실제 실패를 대체하지 않는다.
+
+별도 tool-free capability probe에서는 설치된 Pi와 실제 Solar Pro4 Max가 `response_format: json_schema`를 받아 지정된 단일 필드/enum으로 응답하는 것을 확인했다. 이는 native schema 지원 증거일 뿐, 새 Planner wire나 전체 업무의 성공 증거는 아니다. 구조화 응답, 원본-산출물 결속 보정, 관련 검증은 기존 실패 후보와 구분한다. Workflow 문서의 provenance 상한도 이미 배포된 코드의 1 MiB/128 KiB에 맞춰 바로잡았으며, runtime 예산을 늘린 변경이 아니다.
+
+C5는 구조화 Planner wire와 원본/산출물/resolution 결속을 도입한 동결 후보다. 264개 회귀 검사, installed-Pi native-schema loopback, 37개 배포 파일 검사는 통과했지만 실제 계획 실행은 실패했다. Source는 `75c637c22feb70f08610cd581e8f2cf4cce0269aaa5bc9f147ca51d802817d7c`이며 driver/grader protocol은 C1–C4와 같다. 네 Planner 시도 중 세 개는 timeout, 하나는 정상 종료했지만 자유 서술과 경로가 `"S"`로 축소되어 visible steps 0개 검사에서 거절됐다. 유효한 계획 저장이나 권한 밖 호출은 없었다.
+
+별도 실제 tool-free 비교 probe에서 두 필드에 동일한 `Summary of records`를 요청했다. 길이 제한만 둔 필드는 전체 문장을 반환했지만 substring `pattern: "\\S"`가 있는 필드는 `"S"`만 반환했다. 따라서 자유 문자열/경로의 native substring pattern만 제거했다. 길이 제한, canonical ID pattern, host의 공백 거절·경로·계약·참조·권한 검사는 그대로 유지한다. 수정 후 265개 회귀 검사와 installed-Pi loopback은 통과했다. 이 진단은 schema grammar 문제의 재현이지 전체 Planner 품질이나 timeout 해결 증거가 아니다.
+
+C6 source `403d701f7fc5b3ba99ba8e53e5fcefe0623931c7daa8da1e7676ec9cbfd2f645`는 같은 protocol에서 문장과 경로를 정상 길이로 반환했지만, 세 시도는 timeout이었고 마지막 응답은 numbered step 표지가 없어 거절됐다. 원문 점검에서는 `requires`에 requirement ID 대신 artifact ID를 넣고 command gate의 `check`에 실행 명령과 결과 설명을 섞은 문제도 확인했다. 유효한 계획은 저장되지 않았다. 현재 수정본은 step 표기·참조 대상·command/check와 pass의 역할을 schema 설명과 전달 지침에 명시한다. Validator나 grader는 완화하지 않았다.
+
+C7 source `6d6b61d7d30bf174befd9cc2fd4b35f1d2466e181e5babfb25019e2c43cbbf0c`도 같은 protocol에서 실패했다. 두 정상 종료 응답은 각각 immutable evidence의 gate 상호 참조 누락과 artifactCoverage에 입력 evidence까지 포함한 오류로 거절됐고, 나머지 두 시도는 timeout이었다. 수정본은 immutable evidence도 gate와 상호 참조해야 하지만 produced-artifact coverage에는 들어가지 않는다는 차이를 명시하고, 실패 메시지에 실제 gate/expected artifact ID를 표시한다. 자동 관계 보정, evidence 생성, validator 완화는 하지 않는다.
+
+C8 source `5c357477a29848c3b38a39b550992a48a3bdcab3ed0a2bb9ff0467723e7c35df`는 같은 protocol의 planning-only 과제에서 처음으로 12/12 assertions를 통과했다. Planner, Approach Reviewer, Critic 각 1회가 정상 종료했고 현재 revision의 세 review를 거쳐 `planning_complete`에 도달했다. 실행이나 승인 token 생성은 없었다. 이는 해당 과제 1회 성공이며, full execution·새 heldout·3회 연속 검증·우월성의 증거는 아니다. Isolated-role tokens는 여전히 관측되지 않는다.
+
+같은 C8의 execute-summary는 검토된 계획까지 도달했지만 synthetic approval에서 거절됐다. 계획 domain은 `research`였고 grader는 `software`만 허용했는데, 실행 fixture의 요청에는 해당 domain 요구가 명시되어 있지 않았다. 이는 실험 요청과 판정 조건의 불일치다. 현재 fixture 생성은 기존 grader가 강제하는 software domain을 모든 execution 요청과 hash-bound manifest에 명시한다. Grader는 그대로이며 research-domain 응답 거절 회귀 검사도 유지한다. 이 변경은 **새 protocol**이므로 C8 planning 성공을 새 protocol의 연속 성공 횟수로 이월하지 않는다. 기존 실패 기록과 1회 Critic timeout은 그대로 남는다.
+
+C9는 C8과 같은 product source를 새 protocol `3e93d625f944f31e55f85bdc16e599643504d062545865676b39767e6d0846b4`로 실행했다. 세 Planner 시도는 timeout이었고, 하나는 추가 evidence-presence gate와 입력 artifact의 상호 참조 불일치로 거절됐다. 따라서 domain 요청 보정만으로 full-loop 성공이나 no-new-defects 검증이 성립하지 않았다. 268개 회귀 검사와 installed-Pi loopback은 통과했지만 실제 결과는 실패로 유지한다.
+
+동일 C9의 redacted transport 진단에서는 timeout된 Planner와 Critic이 각각 HTTP 200 후 thinking delta 집계 52159/48112를 계속 전송하면서 visible text는 0으로 남았다. Headers까지는 각각 8127/31613 ms, 종료는 179944/179947 ms였고 finish reason·DONE·usage가 없었다. 따라서 두 건을 단순한 무응답 네트워크 대기라고 할 수 없다. 다른 네 role 요청은 정상 종료했고 일부 실제 usage가 관측됐지만, timeout 비용이 빠져 있어 전체 role 비용은 계산하지 않는다. 계측 실행은 무계측 paired 비용 비교나 연속 성공 검증에 사용하지 않는다.
+
+수정 진행 중 수행한 C9 development breadth probe는 수렴 횟수에서 제외했다. research-local은 11/11, 23897 ms, main 3회/15832 tokens였으며 근거 없는 충돌을 정직하게 blocked 상태로 남겼다. interview-correction은 contradiction/correction 검사를 통과했지만 `records.json`과 추측한 `.pi/state/interview.json` read 때문에 11/12로 실패했다(215596 ms, main 8회/103839 tokens). 해당 fixture는 실제 파일과 허용 read가 모두 없으면서 prospective 파일명을 실제 파일처럼 설명했다. 현재 요청은 명세 연습임과 파일 부재·filesystem 접근 금지를 명시하고, 두 read를 계속 거절하는 회귀 검사를 추가한다. 실패 기록은 유지하며 이 요청 보정도 새 protocol에 포함한다.
+
+별도 read-only 감사는 ID 필드 밖까지 파일명을 금지한 문구, no-output 재시도에서 직전 semantic 실패 맥락을 잃는 문제, 16000자 prefix의 무표시 절단, initial Planner가 지원하지 않는 blocked 결과 지시를 확인했다. 현재 수정본은 명령/출처/서술의 파일명을 허용하되 ID 문법을 유지하고, 마지막 rejected 응답과 오류를 보존하며, 같은 길이 상한 안에서 계약·coverage·resolutions 중심의 verbatim 발췌와 생략 범위를 표시한다. Initial 한계와 revision의 blocked finding도 구분한다. Interviewer의 recall은 host-provided 상태만 사용하며 backing state 파일을 찾지 않도록 명시했다. 274개 회귀 검사와 installed-Pi loopback은 통과했다. 이 보정들이 관측된 모든 timeout을 해결한다는 인과적 증거는 없다.
+
+C10 source `59f73ebf8de6bad109b6535cb03b81e9b37c323f78445ed00f95893b9c1e8227`, protocol `a08245faf1115e07449799e552c893f1f257296c06bbd1bb986110f28208e486`는 실제 exact approval, 출력 작성, 현행 command gate 및 final byte 검증을 거쳐 `execute/complete`에 도달했다. 기대 JSON, 권한 검사, 무-timeout 검사는 통과했다. 그러나 grader는 command-only 완료에서 `finalReview`가 없어야 한다고 잘못 요구해 15/16으로 실패 처리했다. 실제 `finishVerification`은 command-only 완료에도 검증 digest를 보존한다. `*`는 이 확인된 판정 결함을 뜻하며, 동결 결과를 성공으로 다시 쓰지는 않는다. Runtime digest를 삭제하는 대신 현행 승인·gate·manifest·digest·실제 파일 증거를 검증하는 판정 보정이 진행 중이다.
+
+C10 interview authority probe는 명시적 접근 금지와 host-state 안내 이후에도 11/12로 실패했다(175550 ms, main 7회/105309 tokens). Workspace 밖의 추측한 skill 경로 read 1회와 `.pi/answer-head.json` read 2회가 관측됐다. Audit의 정규화된 path가 null인 첫 호출도 실제 인자는 존재했다. 따라서 요청/지침 명확화만으로 해당 무단 시도가 해결됐다고 판단하지 않는다. 이 실패는 완료 grader 결함과 별개이며, 수렴 기준은 충족되지 않았다.
+
+독립 read-only 감사에서는 각 호출 전 현재 answer ID·content hash·heads·저장된 assessment가 이미 공급됐음을 확인했다. 추측한 상태 파일은 ENOENT로 끝났으며 실제 비공개 내용 노출은 관측되지 않았다. 그러나 interview dispatch에는 private-state 경로를 content 접근 전에 거절하는 검사가 없어 파일이 존재하면 읽힐 수 있는 별도 P1 결함이 확인됐다. 좁은 canonical private/controller 경계와 host 지침을 보강하는 수정이 진행 중이다. 정상 evidence read를 전부 제거하거나 거절된 시도를 안전한 성공으로 재분류하지 않는다.
+
+C10 inventory development probe도 10/16, 323819 ms, main 6회/55467 tokens로 막혔다. 네 Planner 응답은 모두 전송상 정상 종료했지만 gate 상호 참조와 immutable input을 생산 output으로 취급한 오류로 거절되어 repair 예산을 소진했다. `Evaluator.mjs` read도 선언된 exact-case 경로와 달라 기존 audit에서 거절됐다. 이 inventory는 이전에 소비된 development 사례이며 새 heldout으로 세지 않는다.
+
+완료 판정 보정은 approved plan bytes에서 추출한 contract, 현행 승인/revision/artifact table, 모든 command gate, 전후 final/acceptance manifest, 독립 파일 snapshot, 재계산한 finalReview digest를 요구한다. 독립 검토에서 발견한 plan-bytes/contract 결속 누락도 보완했다. 보존된 실제 C10 증거에 새 **완료 assertion 하나만** 적용한 진단은 이 검사들을 통과했다. 원본 실패 결과는 byte 변경 없이 유지했으며, 전체 run 재등급이나 새 protocol의 실측 성공·수렴 횟수로 사용하지 않는다.
+
+이후 보정본의 280개 회귀 검사는 통과했지만 강화된 installed-Pi multi-read loopback은 실패했다. 실제 private session read 거절과 정상 sibling JSONL read는 성공했으나, 자동 interview repair continuation의 다음 요청에서 전체 interviewer system prompt가 빠졌다. 설치된 Pi의 per-turn override 종료 및 다음 응답의 base-prompt 선택 경로를 확인했으며, SDK를 고치는 대신 현재 역할을 매 provider 요청에 결속하는 수정이 진행 중이다. 이 loopback 결함을 과거 C10 무단 read 전체의 원인으로 단정하지 않는다.
+
+Provider 요청마다 현재 역할을 cache 없이 읽어 host-owned frame으로 결속하고, 이전 frame만 교체하는 보정 후 284개 회귀 검사와 강화된 installed-Pi loopback이 통과했다. 비공개 session 거절, 같은 container의 정상 JSONL read, 자동 continuation의 단일 role frame, 기존 confirmation·planning 검사를 유지했다. 중단된 일반 대화에 interview budget이 남는 문제도 제거했다. 이는 deterministic/loopback 검증이며 새 동결 후보의 실측 성공은 아니다.
+
+후속 검토에서 드러난 owner-workspace/context-workspace 혼동도 수정했다. 다른 workspace에서 원 소유자의 controller 경로를 읽거나 같은 상대 경로로 research 예외를 얻을 수 없으며, raw 저장 상태로 active role을 되살리지 않는다. 설치된 Pi resolver를 대조한 tilde·Windows namespace 거절과 정상 namespace JSONL read를 포함하여 286개 회귀 검사와 loopback이 통과했다. 여러 의도적 거절을 시험할 때는 실제로 소진된 자동 repair 허용량을 늘리지 않고 별도 사용자 continuation을 사용했다.
+
+C11 source `da3d0c55e8514f5939584420938126cbbde8dafc8c68c79ef75bfa5d8db3fed3`, protocol `a45dc569bf9cffb8206af1cf8457f1583bb3893b3441e60108ed9c1d63bf4801`의 실측은 다음과 같다.
+
+| C11 사례 | 판정 | 검사 | Main calls / tokens | Role attempts | 시간 ms |
+|---|---|---:|---:|---:|---:|
+| interview-correction | 통과 | 12/12 | 4 / 55927 | 0 | 229812 |
+| execute-summary | 실패 | 15/16 | 11 / 154713 | 5 | 725036 |
+| inventory development | 실패 | 11/16 | 7 / 95813 | 6 | 981011 |
+| plan-software diagnostic | 실패 | 11/12 | 1 / 3372 | 6 | 845881 |
+| research-local diagnostic | 통과 | 11/11 | 2 / 10333 | 0 | 18082 |
+
+Interview에서는 무단 read 없이 correction/readiness를 통과했다. Summary 실행과 planning-only는 각각 실제 `complete`/`planning_complete`에 도달했지만, 앞선 role timeout 때문에 기존 실패-부재 검사를 통과하지 못했다. 복구 성공을 무오류 run으로 바꾸지 않는다. Inventory는 Critic timeout 뒤 예산 소진으로 승인 전 멈췄다. 이때 runner가 승인 **가능성 검사**를 실제 승인으로 기록한 별도 판정 결함이 발견됐다. 실제 host grant와 eligibility를 구분하고 미발행·거절된 승인으로 audit 경계를 이동하지 않도록 보정 중이며, C11 원본 판정은 유지한다.
+
+승인 보정 후 eligibility와 실제 요청/host grant를 별도 기록하며, 정확한 workflow·revision·artifact table의 grant가 관측된 경우에만 approval 및 audit 경계를 확정한다. 미발행·거절·stale 승인과 실제 grant 이후 실패를 구분하는 검사를 포함해 289개 회귀 검사와 installed-Pi loopback이 통과했다. 이 변경도 새 protocol이며 이전 run의 승인 판정을 소급 변경하지 않는다.
+
+C12 `execute-summary`는 450006 ms, 7 main calls / 77992 tokens, 10/16 실패였다. 첫 Planner는 timeout, 두 번째는 `stop`으로 끝났지만 6584-character JSON이 닫히지 않고 공백으로 끝나 원래대로 거절됐다. 그 공백을 보존한 repair prompt 자체가 trimmed-input 검사를 위반해 다음 허용된 시도가 시작되지 않는 controller 결함을 발견했다. 고정 종료 표식을 추가하여 원본 공백을 포함한 거절 출력·receipt·16000-character excerpt 한도를 유지하면서 요청 바깥 경계만 정상화했다. JSON 자동 완성이나 추가 retry는 없다. 해당 회귀 검사를 포함해 290개 검사와 installed-Pi loopback이 통과했으며, 새 source로 독립 검증을 다시 시작한다.
+
+C13에서도 무오류 검증에는 도달하지 못했다. Summary는 768817 ms, 5 main calls / 44718 tokens, 10/16 실패였고, 세 Planner timeout 이후 마지막 후보의 read/write capability에 shell command가 포함되어 거절됐다. Local research는 18410 ms, 3 calls / 15964 tokens, 9/11로, public receipt 없는 `evidence` 주장이 두 번 거절됐다. Interview는 1200082 ms 전체 제한에 도달해 9/12였다. 6개 main 메시지에서 65354 tokens가 관측됐지만 중단된 마지막 응답의 전체 사용량은 알 수 없다. 금지된 workspace 디렉터리 read도 시도했으며 `EISDIR`로 끝났다. 경로 감사가 보여 준 빈 상대 경로는 인자 누락이 아니라 workspace 루트에 대한 절대 경로였다.
+
+C9의 `records.json` read는 별도 문구 혼동이 있었다. 당시 요청은 파일을 “workspace-local”이라고 설명했지만 실제 fixture에는 파일이 없었다. 현재 요청은 prospective 이름이며 파일 제공·filesystem read 권한이 없음을 명시한다. C9 원본 실패는 유지하며, 이 혼동을 `.pi` 상태 탐색과 같은 결함으로 묶지 않는다.
+
+독립 검토는 RPC preflight 응답을 실제 grant 관측 장벽으로 볼 수 없다는 추가 한계를 찾았다. Grant 뒤 revisit가 먼저 끝나면 최신 상태만으로는 실제 과거 승인을 놓칠 수 있다. 이는 승인 오인보다 보수적 관측 손실이며, 실제 dispatch와 요청 직전 entry watermark에 한정한 host 이력 복구를 보정 중이다. 별도 합성 Windows 파일 검사에서는 `::$DATA`와 hard link가 다른 canonical 경로로 같은 파일에 도달함을 확인했다. 실제 비공개 파일을 읽은 검사는 아니며, 정확한 session/credential identity 보호의 보정과 합동 검증도 진행 중이다.
+
+후속 합동 검증은 298/298 통과했고 installed-Pi smoke에서도 session/credential stream 거절과 정상 named-stream evidence read가 통과했다. 정확한 session hard link는 bigint 파일 identity를 사용하는 회귀 검사로 검증했다. 요청 이전 이력을 제외하는 unique-tail watermark와 비어 있거나 중복된 cursor 거절까지 보정했으며, 이 두 cursor 지적에 한정한 독립 재검토는 해결로 판정했다. 새 protocol의 실제 live 승인 경로는 아직 별도 검증 대상이다. Windows file-symlink-to-stream 조합은 합성 link 생성이 `EPERM`으로 막혀 실제 검증했다고 주장하지 않는다.
+
+점검 중 기존 두 heldout의 요청 설명 일부가 검색 결과에 노출되었다. 입력 데이터·evaluator·정답·live 결과는 읽지 않았고 튜닝에 사용하지 않았지만, 해당 설계를 계속 blind heldout이라고 세지는 않는다. 독립 검증은 source/protocol 보정 이후 새로 동결한 사례를 기준으로 계산한다.
+
+C13 development 다섯 사례는 모두 실패했다. 나머지 planning-only는 1200230 ms, 1 main call / 3490 tokens, 8 role attempts, 9/12였으며 두 번째 review cycle의 Critic이 전체 제한으로 취소됐다. Inventory는 582113 ms, 5 calls / 45533 tokens, 4 Planner attempts, 10/16으로 승인 전에 멈췄다.
+
+C14의 metadata-only 계측은 실제 provider 요청에 완전한 역할이 실리는지를 확인했다. Research는 16605 ms, 2 calls / 10145 tokens, 11/11이었고 두 요청 모두 Researcher 전체와 정확히 하나의 host frame을 포함했다. 별도 execution 진단은 953370 ms, 4 calls / 33079 tokens, 9 role attempts, 10/16 실패였다. 세 Interviewer 요청은 완전한 현재 역할 한 개, planning dispatcher는 이전 main 역할 없이 frame 한 개, 아홉 isolated 요청은 각각 해당 worker 역할을 포함했다. 그러나 review budget 소진과 허용 evaluator 외 command 때문에 실제 승인 요청은 발행되지 않았다. 역할 전달이 관측돼도 모델의 계약 준수나 전체 완료가 보장되지는 않는다. 두 계측 run은 convergence나 비계측 비용 비교에 사용하지 않는다.
+
+비계측 C14 planning-only도 723203 ms, 1 main call / 3494 tokens, 8/12 실패였으며 Planner 네 시도가 모두 제한에 도달했다.
+
+새 승인 cursor의 정상 경로는 real Solar 성공을 기다리는 대신 installed-Pi loopback에 실제 experiment runner CLI를 연결해 별도로 검증했다. 첫 시도는 임시 설치 package와 explicit CLI skill의 provenance 충돌, 두 번째는 새 mock plan의 numbered-step 누락으로 차단됐다. 기존 검사는 유지하고 runner의 임시 설정을 분리하며 mock plan을 올바르게 작성한 뒤, 실제 RPC dispatch → 요청 이전 watermark → 이후 host grant → evaluator/final manifests 경로와 16/16 독립 runner 검사가 통과했다. 실패 자료는 보존했다. 이는 설치된 SDK/controller/runner 통합 증거이지 real Solar 품질이나 convergence가 아니다.

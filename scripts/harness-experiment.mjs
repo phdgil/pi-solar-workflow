@@ -49,6 +49,28 @@ function safeError(error) {
   return sanitizeDiagnostic(error instanceof Error ? error.message : String(error));
 }
 
+function validEntryId(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && /^[^\s\u0000-\u001f\u007f]+$/u.test(value);
+}
+
+function validateEntryPageReceipt(value, since = undefined) {
+  if (since !== undefined && !validEntryId(since)) throw new Error("RPC get_entries requires a nonempty well-formed cursor.");
+  if (!Array.isArray(value?.entries)) throw new Error("RPC get_entries returned a malformed cursor receipt.");
+  const identifiers = value.entries.map(entry => entry?.id);
+  if (identifiers.some(identifier => !validEntryId(identifier))) throw new Error("RPC get_entries returned an entry with a malformed ID.");
+  if (new Set(identifiers).size !== identifiers.length) throw new Error("RPC get_entries returned duplicate entry IDs.");
+  if (since !== undefined && identifiers.includes(since)) throw new Error("RPC get_entries repeated its exclusive cursor in the subsequent page.");
+  if (value.entries.length === 0) {
+    const expectedLeaf = since ?? null;
+    if (value.leafId !== expectedLeaf) throw new Error("RPC get_entries returned an invalid leaf for an empty page.");
+  } else if (!validEntryId(value.leafId) || value.leafId !== identifiers.at(-1)) {
+    throw new Error("RPC get_entries leaf must be the unique final entry ID.");
+  }
+  return { entries: value.entries, leafId: value.leafId };
+}
+
 export function sanitizeDiagnostic(value) {
   return String(value ?? "")
     .replace(/\b(Authorization\s*:\s*Bearer)\s+[^\s,;]+/giu, "$1 [REDACTED]")
@@ -80,6 +102,7 @@ export function parseHarnessArguments(argv) {
     caseName: undefined,
     repeat: 1,
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    deadlineAt: undefined,
     list: false,
     help: false,
     exactArgs: [...argv],
@@ -91,6 +114,7 @@ export function parseHarnessArguments(argv) {
     ["--case", "caseName"],
     ["--repeat", "repeat"],
     ["--timeout-ms", "timeoutMs"],
+    ["--deadline-at", "deadlineAt"],
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -116,6 +140,7 @@ export function parseHarnessArguments(argv) {
   }
   if (typeof options.repeat === "string") options.repeat = positiveInteger(options.repeat, "--repeat", 100);
   if (typeof options.timeoutMs === "string") options.timeoutMs = positiveInteger(options.timeoutMs, "--timeout-ms", 3_600_000);
+  if (options.deadlineAt !== undefined) validateDeadline(options.deadlineAt);
   if (options.list || options.help) return options;
   for (const [field, name] of [["checkout", "--checkout"], ["label", "--label"], ["output", "--output"], ["caseName", "--case"]]) {
     if (typeof options[field] !== "string" || !options[field].trim()) throw new Error(`${name} is required.`);
@@ -129,9 +154,25 @@ export function parseHarnessArguments(argv) {
 export function harnessUsage() {
   return [
     "Usage:",
-    "  node scripts/harness-experiment.mjs --checkout PATH --label STRING --output PATH --case CASE [--repeat N] [--timeout-ms MS]",
+    "  node scripts/harness-experiment.mjs --checkout PATH --label STRING --output PATH --case CASE [--repeat N] [--timeout-ms MS] [--deadline-at UTC_ISO]",
     "  node scripts/harness-experiment.mjs --list",
   ].join("\n");
+}
+
+function validateDeadline(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value) {
+    throw new Error("--deadline-at must be an exact UTC ISO timestamp, including milliseconds and Z.");
+  }
+  return timestamp;
+}
+
+export function boundedRunTimeout(timeoutMs, deadlineAt, now = Date.now()) {
+  if (deadlineAt === undefined) return timeoutMs;
+  // Reserve failure recovery and process shutdown time; never reset the campaign
+  // deadline when a repeat starts.
+  const remaining = validateDeadline(deadlineAt) - now - 30_000;
+  return remaining > 0 ? Math.min(timeoutMs, remaining) : null;
 }
 
 export function discoverPiCli(environment = process.env) {
@@ -330,11 +371,18 @@ export class RpcClient {
     }
     if (message.type === "response" && message.id && this.pending.has(message.id)) {
       const pending = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      clearTimeout(pending.timer);
-      if (message.success) pending.resolve(message);
-      else pending.reject(new Error(`RPC ${message.command ?? pending.command} failed: ${sanitizeDiagnostic(message.error ?? "unknown error")}. ${this.diagnostic()}`));
+      pending.response = message;
+      this.settlePending(message.id);
     }
+  }
+
+  settlePending(id) {
+    const pending = this.pending.get(id);
+    if (!pending?.writeCompleted || !pending.response) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if (pending.response.success) pending.resolve(pending.response);
+    else pending.reject(new Error(`RPC ${pending.response.command ?? pending.command} failed: ${sanitizeDiagnostic(pending.response.error ?? "unknown error")}. ${this.diagnostic()}`));
   }
 
   diagnostic() {
@@ -350,7 +398,7 @@ export class RpcClient {
     this.pending.clear();
   }
 
-  request(type, fields, deadline, maximumWaitMs = undefined) {
+  request(type, fields, deadline, maximumWaitMs = undefined, onDispatched = undefined) {
     if (this.protocolError) return Promise.reject(this.protocolError);
     if (this.child.exitCode !== null || this.child.signalCode !== null) return Promise.reject(new Error(`Pi RPC is not running. ${this.diagnostic()}`));
     const remaining = Math.max(0, deadline - Date.now());
@@ -362,13 +410,34 @@ export class RpcClient {
         this.pending.delete(id);
         reject(new Error(`RPC ${type} timed out. ${this.diagnostic()}`));
       }, wait);
-      this.pending.set(id, { resolve, reject, timer, command: type });
-      this.child.stdin.write(`${JSON.stringify({ id, type, ...(fields ?? {}) })}\n`, error => {
-        if (!error || !this.pending.has(id)) return;
+      this.pending.set(id, { resolve, reject, timer, command: type, response: null, writeCompleted: false });
+      try {
+        this.child.stdin.write(`${JSON.stringify({ id, type, ...(fields ?? {}) })}\n`, error => {
+          if (!error) {
+            const pending = this.pending.get(id);
+            if (!pending) return;
+            try {
+              onDispatched?.({ id, type });
+            } catch (dispatchError) {
+              clearTimeout(timer);
+              this.pending.delete(id);
+              reject(dispatchError);
+              return;
+            }
+            pending.writeCompleted = true;
+            this.settlePending(id);
+            return;
+          }
+          if (!this.pending.has(id)) return;
+          clearTimeout(timer);
+          this.pending.delete(id);
+          reject(error);
+        });
+      } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
         reject(error);
-      });
+      }
     });
   }
 
@@ -391,14 +460,19 @@ export class RpcClient {
     throw new Error(`Pi RPC did not settle before the run deadline. ${this.diagnostic()}`);
   }
 
-  async prompt(message, deadline) {
+  async prompt(message, deadline, options = {}) {
     const since = this.events.length;
-    await this.request("prompt", { message }, deadline);
+    await this.request("prompt", { message }, deadline, undefined, options.onDispatched);
     return this.waitForSettled(since, deadline);
   }
 
+  async entryPage(deadline, maximumWaitMs = undefined, since = undefined) {
+    const data = (await this.request("get_entries", since === undefined ? {} : { since }, deadline, maximumWaitMs)).data;
+    return validateEntryPageReceipt(data, since);
+  }
+
   async entries(deadline, maximumWaitMs = undefined) {
-    return (await this.request("get_entries", {}, deadline, maximumWaitMs)).data.entries;
+    return (await this.entryPage(deadline, maximumWaitMs)).entries;
   }
 
   async close(options = {}) {
@@ -462,11 +536,133 @@ function readAndValidatePlan(workspace, workflow, runtime) {
   return { planPath, planText, contract };
 }
 
+function eligibilityReceipt(validation) {
+  return {
+    safe: validation.safe === true,
+    eligible: validation.approved === true,
+    decision: validation.approved === true ? "eligible_synthetic_fixture" : "ineligible_synthetic_fixture",
+    policyDecision: validation.decision,
+    caseName: validation.caseName,
+    evaluatorCommand: validation.evaluatorCommand,
+    violations: [...(validation.violations ?? [])],
+  };
+}
+
+function unconfirmedApproval(eligibility, request = null, violations = []) {
+  return {
+    safe: eligibility?.safe === true,
+    eligible: eligibility?.eligible === true,
+    approved: false,
+    decision: request ? "host_approval_unconfirmed" : "host_approval_not_requested",
+    eligibilityDecision: eligibility?.decision ?? null,
+    caseName: eligibility?.caseName ?? null,
+    evaluatorCommand: eligibility?.evaluatorCommand ?? null,
+    request,
+    grant: null,
+    violations: [...violations],
+  };
+}
+
+function approvalGrantMismatches(request, workflow) {
+  const mismatches = [];
+  if (!workflow || workflow.id !== request.workflowId) mismatches.push("workflow_identity_mismatch");
+  if (workflow?.stage !== "execute") mismatches.push("execute_stage_not_granted");
+  if (workflow?.status !== "active") mismatches.push("active_execution_not_granted");
+  if (workflow?.revision !== request.planRevision || workflow?.plan?.revision !== request.planRevision) mismatches.push("plan_revision_not_granted");
+  if (workflow?.artifactTableRevision !== request.artifactTableRevision) mismatches.push("artifact_table_revision_not_current");
+  if (workflow?.approval !== request.planRevision) mismatches.push("plan_approval_not_granted");
+  if (workflow?.approvalArtifactTableRevision !== request.artifactTableRevision) mismatches.push("artifact_table_approval_not_granted");
+  return mismatches;
+}
+
+function approvalGrantEntry(entry, request) {
+  if (entry?.type !== "custom"
+    || entry.customType !== "solar-workflow-state-v1"
+    || typeof entry.id !== "string"
+    || !entry.id
+    || entry.id === request.entryWatermark
+    || entry.data?.version !== 3
+    || approvalGrantMismatches(request, entry.data).length) return null;
+  return {
+    entryId: entry.id,
+    workflowId: entry.data.id,
+    planRevision: entry.data.approval,
+    artifactTableRevision: entry.data.approvalArtifactTableRevision,
+    stage: entry.data.stage,
+    status: entry.data.status,
+  };
+}
+
+export function reconcileHostApproval(flow, evidence) {
+  const request = flow?.approvalRequest;
+  if (!request || flow.approval?.approved === true) return flow?.approval ?? null;
+  if (request.dispatched !== true
+    || typeof request.rpcRequestId !== "string"
+    || !/^harness-[A-Za-z0-9_-]+$/u.test(request.rpcRequestId)
+    || typeof request.workflowId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(request.workflowId)
+    || !/^[a-f0-9]{64}$/u.test(request.planRevision ?? "")
+    || !/^[a-f0-9]{64}$/u.test(request.artifactTableRevision ?? "")
+    || typeof request.entryWatermark !== "string"
+    || !request.entryWatermark
+    || !Number.isInteger(request.eventIndex)
+    || request.eventIndex < 0
+    || request.command !== `/solar-workflow approve ${request.planRevision.slice(0, 12)}`) {
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, request, ["approval_request_not_dispatched"]);
+    flow.approvalBoundaryEventIndex = null;
+    return flow.approval;
+  }
+  let page;
+  try {
+    if (!evidence || evidence.since !== request.entryWatermark) throw new Error("Approval evidence does not start at the dispatched request's entry watermark.");
+    page = validateEntryPageReceipt(evidence, request.entryWatermark);
+  } catch (error) {
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, request, [`request_bounded_grant_evidence_unavailable:${safeError(error)}`]);
+    flow.approvalBoundaryEventIndex = null;
+    return flow.approval;
+  }
+  const grant = page.entries.map(entry => approvalGrantEntry(entry, request)).find(Boolean);
+  if (!grant) {
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, request, ["matching_host_approval_not_observed"]);
+    flow.approvalBoundaryEventIndex = null;
+    return flow.approval;
+  }
+  grant.observedLeafId = page.leafId;
+  flow.approval = {
+    safe: flow.approvalEligibility?.safe === true,
+    eligible: flow.approvalEligibility?.eligible === true,
+    approved: flow.approvalEligibility?.eligible === true,
+    decision: flow.approvalEligibility?.eligible === true ? "approved_current_host_grant" : "ineligible_host_grant",
+    eligibilityDecision: flow.approvalEligibility?.decision ?? null,
+    caseName: flow.approvalEligibility?.caseName ?? null,
+    evaluatorCommand: flow.approvalEligibility?.evaluatorCommand ?? null,
+    request,
+    grant,
+    violations: flow.approvalEligibility?.eligible === true ? [] : ["policy_ineligible_despite_host_grant"],
+  };
+  flow.approvalBoundaryEventIndex = flow.approval.approved ? request.eventIndex : null;
+  return flow.approval;
+}
+
+async function recoverHostApproval(client, flow, deadline, maximumWaitMs = undefined) {
+  const request = flow?.approvalRequest;
+  if (!request?.dispatched || typeof request.entryWatermark !== "string") return reconcileHostApproval(flow, null);
+  try {
+    const page = validateEntryPageReceipt(await client.entryPage(deadline, maximumWaitMs, request.entryWatermark), request.entryWatermark);
+    return reconcileHostApproval(flow, { since: request.entryWatermark, entries: page.entries, leafId: page.leafId });
+  } catch (error) {
+    const diagnostic = `request_bounded_grant_evidence_unavailable:${safeError(error)}`;
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, request, [diagnostic]);
+    flow.approvalBoundaryEventIndex = null;
+    return flow.approval;
+  }
+}
+
 export async function runFixtureFlow(fixture, client, runtime, workspace, deadline, flow) {
   const prompts = flow.prompts;
-  const send = async message => {
+  const send = async (message, options = undefined) => {
     prompts.push(message);
-    await client.prompt(message, deadline);
+    await client.prompt(message, deadline, options);
     return recover(client, runtime, deadline);
   };
   let current = await send(fixture.initialPrompt);
@@ -482,7 +678,7 @@ export async function runFixtureFlow(fixture, client, runtime, workspace, deadli
   }
 
   if (fixture.kind !== "execute") throw new Error(`Unsupported fixture kind: ${fixture.kind}`);
-  if (!new Set(["execute-summary", "execute-inventory-heldout"]).has(fixture.name)) throw new Error("Programmatic confirmation is forbidden outside the explicit synthetic execute allowlist.");
+  if (!new Set(["execute-summary", "execute-inventory-heldout", "execute-config-overlay-heldout", "execute-dependency-readiness-heldout"]).has(fixture.name)) throw new Error("Programmatic confirmation is forbidden outside the explicit synthetic execute allowlist.");
   let interview = readyInterview(current.entries);
   for (const answer of fixture.answers) {
     if (interview) break;
@@ -505,24 +701,75 @@ export async function runFixtureFlow(fixture, client, runtime, workspace, deadli
     plan = readAndValidatePlan(workspace, current.workflow, runtime);
     flow.planContract = plan.contract;
   } catch (error) {
-    flow.approval = { approved: false, decision: "unsafe_not_approved", caseName: fixture.name, evaluatorCommand: fixture.evaluatorCommand, violations: [`checkout_plan_validation_failed:${safeError(error)}`] };
+    flow.approvalEligibility = eligibilityReceipt({ safe: false, approved: false, decision: "unsafe_not_approved", caseName: fixture.name, evaluatorCommand: fixture.evaluatorCommand, violations: [`checkout_plan_validation_failed:${safeError(error)}`] });
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, null, [...flow.approvalEligibility.violations]);
     flow.unsafe = Boolean(current.workflow?.plan);
     if (!current.workflow?.plan) flow.blockedReason = "reviewed_plan_not_available";
     return { ...flow, ...current };
   }
 
-  flow.approval = validateSyntheticApproval(plan.contract, fixture.name);
-  if (!flow.approval.approved) {
+  flow.approvalEligibility = eligibilityReceipt(validateSyntheticApproval(plan.contract, fixture.name));
+  flow.approval = unconfirmedApproval(flow.approvalEligibility);
+  if (!flow.approvalEligibility.eligible) {
     flow.unsafe = true;
     return { ...flow, ...current };
   }
-  if (current.workflow?.status !== "awaiting_gate_review" || current.workflow?.planning?.revisionState !== "reviewed" || !current.workflow?.autoExecute) {
+  if (current.workflow?.status !== "awaiting_gate_review"
+    || current.workflow?.planning?.revisionState !== "reviewed"
+    || !current.workflow?.autoExecute
+    || typeof current.workflow?.id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(current.workflow.id)
+    || !/^[a-f0-9]{64}$/u.test(current.workflow?.revision ?? "")
+    || sha256Text(plan.planText) !== current.workflow.revision
+    || current.workflow?.plan?.revision !== current.workflow.revision
+    || !/^[a-f0-9]{64}$/u.test(current.workflow?.artifactTableRevision ?? "")
+    || current.workflow?.approval !== undefined
+    || current.workflow?.approvalArtifactTableRevision !== undefined) {
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, null, ["workflow_not_ready_for_host_approval"]);
     flow.blockedReason = "reviewed_plan_not_awaiting_approval";
     return { ...flow, ...current };
   }
 
-  flow.approvalBoundaryEventIndex = client.events.length;
-  current = await send(`/solar-workflow approve ${current.workflow.revision.slice(0, 12)}`);
+  let entryWatermark;
+  try {
+    const beforeDispatch = validateEntryPageReceipt(await client.entryPage(deadline, undefined), undefined);
+    entryWatermark = beforeDispatch.leafId;
+    if (typeof entryWatermark !== "string"
+      || !entryWatermark
+      || beforeDispatch.entries.at(-1)?.id !== entryWatermark) throw new Error("No current session-entry cursor is available.");
+  } catch (error) {
+    flow.approval = unconfirmedApproval(flow.approvalEligibility, null, [`approval_request_not_dispatched:${safeError(error)}`]);
+    flow.blockedReason = "host_approval_evidence_unavailable";
+    return { ...flow, ...current };
+  }
+  const command = `/solar-workflow approve ${current.workflow.revision.slice(0, 12)}`;
+  flow.approvalRequest = {
+    workflowId: current.workflow.id,
+    planRevision: current.workflow.revision,
+    artifactTableRevision: current.workflow.artifactTableRevision,
+    entryWatermark,
+    eventIndex: client.events.length,
+    command,
+    dispatched: false,
+    rpcRequestId: null,
+  };
+  flow.approval = unconfirmedApproval(flow.approvalEligibility, flow.approvalRequest, ["matching_host_approval_not_observed"]);
+  try {
+    current = await send(command, {
+      onDispatched: dispatch => {
+        flow.approvalRequest.dispatched = true;
+        flow.approvalRequest.rpcRequestId = dispatch?.id;
+      },
+    });
+  } catch (error) {
+    await recoverHostApproval(client, flow, Date.now() + 3_000, 3_000);
+    throw error;
+  }
+  await recoverHostApproval(client, flow, deadline);
+  if (!flow.approval.approved) {
+    flow.blockedReason = "host_approval_not_confirmed";
+    return { ...flow, ...current };
+  }
   if (current.workflow?.status === "awaiting_final_review") flow.blockedReason = "human_or_rubric_final_requires_real_user_review";
   else if (["paused", "limited", "revision_required"].includes(current.workflow?.status)) flow.blockedReason = current.workflow.status;
   return { ...flow, ...current };
@@ -597,6 +844,9 @@ export function auditObservedOperations(events, options) {
   const fixture = typeof options.fixture === "string" ? getHarnessFixture(options.fixture) : structuredClone(options.fixture);
   const allowedReads = new Set([...fixture.allowedReadPaths, ...fixture.outputPaths]);
   const outputs = new Set(fixture.outputPaths);
+  const approvalEventIndex = Number.isInteger(options.approvalEventIndex) && options.approvalEventIndex >= 0
+    ? options.approvalEventIndex
+    : null;
   const unauthorized = [];
   const preApprovalMutations = [];
   const operations = [];
@@ -604,7 +854,7 @@ export function auditObservedOperations(events, options) {
     const event = events[index];
     if (event?.type !== "tool_execution_start") continue;
     const tool = event.toolName;
-    const beforeApproval = options.approvalEventIndex === null || options.approvalEventIndex === undefined || index < options.approvalEventIndex;
+    const beforeApproval = approvalEventIndex === null || index < approvalEventIndex;
     const relative = observedPath(options.workspace, event.args?.path);
     const command = typeof event.args?.command === "string" ? event.args.command : null;
     let authorized = false;
@@ -627,7 +877,7 @@ export function auditObservedOperations(events, options) {
     if (MUTATING_TOOLS.has(tool) && beforeApproval) preApprovalMutations.push(operation);
     if (!authorized) unauthorized.push(operation);
   }
-  return { operations, unauthorized, preApprovalMutations };
+  return { approvalEventIndex, operations, unauthorized, preApprovalMutations };
 }
 
 function assistantEntryMessages(entries) {
@@ -749,6 +999,10 @@ export function runStatus(grade, flow, runError, providerFailures, workflow) {
   if (flow?.unsafe) return { status: "failed", reason: "unsafe_not_approved" };
   if (flow?.preflightInvalid) return { status: "failed", reason: "invalid_installation_resources" };
   if (runError) return { status: "failed", reason: "runner_or_controller_error" };
+  if (providerFailures.length && providerFailures.every(failure =>
+    failure.source === "role_attempt" && ["timed_out", "cancelled"].includes(failure.stopReason))) {
+    return { status: "failed", reason: "role_session_interrupted" };
+  }
   if (providerFailures.length) return { status: "failed", reason: "provider_failure" };
   if (flow?.blockedReason) return { status: "blocked", reason: flow.blockedReason };
   if (grade.passed) return { status: "completed", reason: "all_case_assertions_passed" };
@@ -788,7 +1042,7 @@ async function runOne(configuration) {
   let workflow;
   let sessionStats = null;
   let finalState = null;
-  let flow = { prompts: [], confirmation: null, approval: null, approvalBoundaryEventIndex: null, blockedReason: null, unsafe: false, planContract: null };
+  let flow = { prompts: [], confirmation: null, approvalEligibility: null, approval: null, approvalRequest: null, approvalBoundaryEventIndex: null, blockedReason: null, unsafe: false, planContract: null };
   let runError;
   let exit = { exitCode: null, signal: null };
 
@@ -819,6 +1073,7 @@ async function runOne(configuration) {
     }
     if (error?.commands) commands = error.commands;
     if (client) {
+      if (flow.approvalRequest && !flow.approval?.approved) await recoverHostApproval(client, flow, Date.now() + 3_000, 3_000);
       await collectAfterFailure(client);
       try { entries = await client.entries(Date.now() + 3_000, 3_000); } catch {}
       try { workflow = configuration.runtime.recoverWorkflow(entries); } catch {}
@@ -862,6 +1117,7 @@ async function runOne(configuration) {
     outputContents,
     operationAudit,
     planContract: flow.planContract,
+    approvalEligibility: flow.approvalEligibility,
     approval: flow.approval,
     confirmation: flow.confirmation,
     process: exit,
@@ -889,6 +1145,7 @@ async function runOne(configuration) {
     fixture: fixtureManifest(fixture.name),
     preflight: preflightResult,
     confirmation: flow.confirmation,
+    approvalEligibility: flow.approvalEligibility,
     approval: flow.approval,
     blockedReason: flow.blockedReason,
     providerFailures,
@@ -954,6 +1211,7 @@ export async function runHarnessExperiment(options) {
     case: options.caseName,
     repeat: options.repeat,
     timeoutMs: options.timeoutMs,
+    deadlineAt: options.deadlineAt ?? null,
     exactRunnerArgs: options.exactArgs,
     checkout: checkoutReceipt,
     protocol: protocolReceipt,
@@ -963,13 +1221,21 @@ export async function runHarnessExperiment(options) {
   };
   writeJson(manifestPath, manifest, "wx");
   for (let ordinal = 1; ordinal <= options.repeat; ordinal += 1) {
+    const timeoutMs = boundedRunTimeout(options.timeoutMs, options.deadlineAt);
+    if (timeoutMs === null) {
+      manifest.status = "blocked";
+      manifest.reason = "campaign_deadline_exhausted";
+      manifest.finishedAt = new Date().toISOString();
+      replaceJson(manifestPath, manifest);
+      return manifest;
+    }
     if (experimentProtocolReceipt().protocolSha256 !== protocolReceipt.protocolSha256) throw new Error("Experiment driver/grader changed during this invocation; start a fresh protocol run.");
     const result = await runOne({
       ordinal,
       caseName: options.caseName,
       label: options.label,
       output,
-      timeoutMs: options.timeoutMs,
+      timeoutMs,
       exactRunnerArgs: options.exactArgs,
       checkout,
       checkoutReceipt,

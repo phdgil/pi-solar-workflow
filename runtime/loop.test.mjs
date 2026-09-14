@@ -15,6 +15,7 @@ import {
   classifyRecoveryProgress,
   completePlanReview,
   createRoleContextBundle,
+  decodePlannerOutput,
   digest,
   evidenceFile,
   executionExpectation,
@@ -35,8 +36,15 @@ import {
   validateFindingResolutions,
   validatePlanReview,
   validateRoleContextBundle,
+  validateSolarRoleRequest,
   validateStepApproach,
 } from "./loop.ts";
+import {
+  buildPlannerResponseSchema,
+  countPlanSteps,
+  EXECUTION_CONTRACT_ID_PATTERN,
+  PLANNER_SECTION_HEADINGS,
+} from "./planner-output.ts";
 import { workspaceIdentity } from "./workflow.ts";
 
 async function fixture(callback) {
@@ -116,6 +124,22 @@ function planText(contract = contractFixture()) {
   return `# Plan\nStatus: ready\n\n## Execution contract\n\`\`\`json\n${JSON.stringify(contract, null, 2)}\n\`\`\`\n\n## Notes\nThe prose is supplementary.\n`;
 }
 
+function plannerSections(contract = contractFixture(), overrides = {}) {
+  return {
+    goalAndScope: "Deliver the exact requested artifacts within the declared scope.",
+    stepsAndValidation: contract.steps.map((step, index) => `${index + 1}. ${step.title}; run ${step.gates.join(", ")}.`).join("\n"),
+    designReview: "Use only the dependency order, artifact boundaries, and capabilities declared in the contract.",
+    riskReviewAndRevisions: "Reject stale inputs, undeclared authority, and outputs that lack current gate evidence.",
+    acceptanceCriteria: "Every declared final artifact satisfies its bound command or human acceptance gate.",
+    remainingUncertainties: "None in this bounded fixture; all required inputs and checks are explicit.",
+    ...overrides,
+  };
+}
+
+function plannerOutput(contract = contractFixture(), resolutions = [], sections = plannerSections(contract)) {
+  return JSON.stringify({ status: "ready", sections, contract, resolutions });
+}
+
 function diskPlan(workflow) {
   return { workspaceId: workflow.workspaceId, path: workflow.plan.path, text: workflow.plan.text, revision: workflow.revision };
 }
@@ -171,11 +195,12 @@ function roleSuccess(workflow, { role, inputRevision, planRevision, outputRevisi
   };
 }
 
-function beginReviewing(workflow, contract = contractFixture(), resolutions = []) {
-  const text = planText(contract);
+function beginReviewing(workflow, contract = contractFixture(), wireResolutions = []) {
+  const visibleOutput = plannerOutput(contract, wireResolutions);
+  const decoded = decodePlannerOutput(visibleOutput, workflow);
   const inputRevision = digest(`planner bundle ${workflow.id} ${workflow.revision ?? "initial"}`);
-  const role = roleSuccess(workflow, { role: "planner", inputRevision, ...(workflow.revision ? { planRevision: workflow.revision } : {}), outputRevision: digest(text) });
-  return beginPlanRevision(role.workflow, { path: workflow.plan?.path ?? path.join(workflow.cwd ?? process.cwd(), ".solar-workflow", workflow.id, "plan.md"), text, revision: digest(text) }, { plannerReceipt: role.receipt, inputRevision, visibleOutput: text, resolutions });
+  const role = roleSuccess(workflow, { role: "planner", inputRevision, ...(workflow.revision ? { planRevision: workflow.revision } : {}), outputRevision: digest(visibleOutput) });
+  return beginPlanRevision(role.workflow, { path: workflow.plan?.path ?? path.join(workflow.cwd ?? process.cwd(), ".solar-workflow", workflow.id, "plan.md"), text: decoded.planMarkdown, revision: digest(decoded.planMarkdown) }, { plannerReceipt: role.receipt, inputRevision, visibleOutput, resolutions: decoded.resolutions });
 }
 
 function reviewFixture(workflow, role, overrides = {}) {
@@ -286,6 +311,293 @@ test("ExecutionContractV3 requires artifacts, capabilities, gates, and complete 
   assert.deepEqual(validateExecutionPlan(planText()).steps.map(step => step.id), ["STEP1", "STEP2"]);
 });
 
+test("Planner wire renders exact canonical Markdown without copying envelope syntax", () => {
+  const contract = {
+    version: 3,
+    domain: "software",
+    requirements: [{ id: "R", description: "Deliver A.", source: "Request." }],
+    artifacts: [{ id: "A", path: "a.txt", kind: "final", acceptance: "command", gates: ["G"] }],
+    capabilities: [{ id: "C", kind: "write", tool: "write", paths: ["a.txt"], commands: [] }],
+    steps: [{
+      id: "S",
+      title: "Write A",
+      feasibility: "The declared write tool supports a.txt.",
+      inputs: [],
+      outputs: ["A"],
+      actions: ["Write and inspect a.txt."],
+      dependsOn: [],
+      requires: ["R"],
+      gates: ["G"],
+      capabilities: ["C"],
+    }],
+    gates: [{ id: "G", kind: "command", check: "Inspect a.txt.", pass: "The exact required bytes are present.", evidence: ["A"] }],
+    selfCheck: {
+      review: "Reviewed.",
+      requirementCoverage: [{ requirementId: "R", stepIds: ["S"], gateIds: ["G"], explanation: "S and G cover R." }],
+      artifactCoverage: [{ artifactId: "A", stepId: "S", gateIds: ["G"], explanation: "S produces A and G checks it." }],
+      unresolved: [],
+    },
+  };
+  const sections = {
+    remainingUncertainties: "None; this fixture supplies the complete bounded input.",
+    acceptanceCriteria: "The bound command check passes for a.txt.",
+    riskReviewAndRevisions: "Reject undeclared or unverified output.",
+    designReview: "Use the one declared write boundary.",
+    stepsAndValidation: "1. Write a.txt and inspect its exact bytes.",
+    goalAndScope: "Deliver a.txt.",
+  };
+  const visibleOutput = JSON.stringify({ resolutions: [], contract, sections, status: "ready" });
+  const expected = `# Plan
+Status: ready
+
+## Goal and scope
+Deliver a.txt.
+
+## Steps and validation
+1. Write a.txt and inspect its exact bytes.
+
+## Design review
+Use the one declared write boundary.
+
+## Risk review and revisions
+Reject undeclared or unverified output.
+
+## Acceptance criteria
+The bound command check passes for a.txt.
+
+## Remaining uncertainties
+None; this fixture supplies the complete bounded input.
+
+## Execution contract
+\`\`\`json
+{
+  "artifacts": [
+    {
+      "acceptance": "command",
+      "gates": [
+        "G"
+      ],
+      "id": "A",
+      "kind": "final",
+      "path": "a.txt"
+    }
+  ],
+  "capabilities": [
+    {
+      "commands": [],
+      "id": "C",
+      "kind": "write",
+      "paths": [
+        "a.txt"
+      ],
+      "tool": "write"
+    }
+  ],
+  "domain": "software",
+  "gates": [
+    {
+      "check": "Inspect a.txt.",
+      "evidence": [
+        "A"
+      ],
+      "id": "G",
+      "kind": "command",
+      "pass": "The exact required bytes are present."
+    }
+  ],
+  "requirements": [
+    {
+      "description": "Deliver A.",
+      "id": "R",
+      "source": "Request."
+    }
+  ],
+  "selfCheck": {
+    "artifactCoverage": [
+      {
+        "artifactId": "A",
+        "explanation": "S produces A and G checks it.",
+        "gateIds": [
+          "G"
+        ],
+        "stepId": "S"
+      }
+    ],
+    "requirementCoverage": [
+      {
+        "explanation": "S and G cover R.",
+        "gateIds": [
+          "G"
+        ],
+        "requirementId": "R",
+        "stepIds": [
+          "S"
+        ]
+      }
+    ],
+    "review": "Reviewed.",
+    "unresolved": []
+  },
+  "steps": [
+    {
+      "actions": [
+        "Write and inspect a.txt."
+      ],
+      "capabilities": [
+        "C"
+      ],
+      "dependsOn": [],
+      "feasibility": "The declared write tool supports a.txt.",
+      "gates": [
+        "G"
+      ],
+      "id": "S",
+      "inputs": [],
+      "outputs": [
+        "A"
+      ],
+      "requires": [
+        "R"
+      ],
+      "title": "Write A"
+    }
+  ],
+  "version": 3
+}
+\`\`\`
+`;
+  const decoded = decodePlannerOutput(visibleOutput, {});
+  assert.equal(decoded.planMarkdown, expected);
+  assert.deepEqual(decoded.contract, contract);
+  assert.deepEqual(decoded.resolutions, []);
+  assert.equal(countPlanSteps(sections.stepsAndValidation), 1);
+  assert.equal(Object.isFrozen(PLANNER_SECTION_HEADINGS), true);
+  assert.equal(PLANNER_SECTION_HEADINGS.every(entry => Object.isFrozen(entry)), true);
+  assert.deepEqual(PLANNER_SECTION_HEADINGS.map(([key, heading]) => [key, heading]), [
+    ["goalAndScope", "Goal and scope"],
+    ["stepsAndValidation", "Steps and validation"],
+    ["designReview", "Design review"],
+    ["riskReviewAndRevisions", "Risk review and revisions"],
+    ["acceptanceCriteria", "Acceptance criteria"],
+    ["remainingUncertainties", "Remaining uncertainties"],
+  ]);
+});
+
+test("Planner schema mirrors bounded V3 arrays and request-time tools and findings", () => {
+  const tools = ["read", "write"];
+  const findingIds = ["ARCH1", "CRIT1"];
+  const schema = buildPlannerResponseSchema(tools, findingIds);
+  const definitions = schema.$defs;
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ["status", "sections", "contract", "resolutions"]);
+  assert.deepEqual(definitions.capability.properties.tool.enum, tools);
+  assert.deepEqual(definitions.resolution.properties.findingId.enum, findingIds);
+  assert.deepEqual(
+    [schema.properties.resolutions.minItems, schema.properties.resolutions.maxItems],
+    [findingIds.length, findingIds.length],
+  );
+  assert.equal(definitions.executionContract.properties.steps.maxItems, 40);
+  assert.equal(definitions.step.properties.outputs.minItems, 1);
+  assert.equal(definitions.gate.properties.evidence.minItems, 1);
+  assert.equal(definitions.artifact.properties.gates.minItems, 0);
+  assert.equal(definitions.capability.properties.paths.minItems, 0);
+  assert.equal(definitions.capability.properties.commands.minItems, 0);
+  assert.equal(definitions.selfCheck.properties.unresolved.maxItems, 0);
+  assert.match(definitions.sections.properties.stepsAndValidation.description, /'1\. '/);
+  assert.match(definitions.step.properties.requires.description, /requirements\[\]\.id/);
+  assert.match(definitions.gate.properties.check.description, /exact authorized command/);
+  assert.equal(buildPlannerResponseSchema(["read"], []).properties.resolutions.maxItems, 0);
+  tools.push("bash");
+  findingIds.push("LATE1");
+  assert.deepEqual(definitions.capability.properties.tool.enum, ["read", "write"]);
+  assert.deepEqual(definitions.resolution.properties.findingId.enum, ["ARCH1", "CRIT1"]);
+});
+
+test("native free-form strings avoid substring grammars while host nonblank guards remain authoritative", () => {
+  const schema = buildPlannerResponseSchema(["read", "write"], []);
+  for (const name of ["text", "path"]) {
+    assert.equal(Object.hasOwn(schema.$defs[name], "pattern"), false);
+    assert.equal(schema.$defs[name].minLength, 1);
+  }
+  assert.equal(schema.$defs.identifier.pattern, EXECUTION_CONTRACT_ID_PATTERN);
+  const contract = contractFixture(1);
+  for (const [key] of PLANNER_SECTION_HEADINGS) {
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, [], plannerSections(contract, { [key]: " \t\n " })), {}), /Supply/);
+  }
+  const blankDescription = contractFixture(1);
+  blankDescription.requirements[0].description = " \t ";
+  assert.throws(() => decodePlannerOutput(plannerOutput(blankDescription), {}), /Supply/);
+  const blankPath = contractFixture(1);
+  blankPath.artifacts[0].path = " \t ";
+  assert.throws(() => decodePlannerOutput(plannerOutput(blankPath), {}), /Supply/);
+  const decoded = decodePlannerOutput(plannerOutput(contract), {});
+  assert.equal(decoded.contract.artifacts[0].path, contract.artifacts[0].path);
+});
+
+test("Planner decoder rejects old envelopes, section injection, invalid step prose, and invalid V3 contracts", async t => {
+  const contract = contractFixture(1);
+  await t.test("old planMarkdown envelope", () => {
+    assert.throws(() => decodePlannerOutput(JSON.stringify({ planMarkdown: planText(contract), resolutions: [] }), {}), /unsupported fields: planMarkdown/);
+  });
+  await t.test("unknown section key", () => {
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, [], plannerSections(contract, { notes: "Competing content." })), {}), /sections contains unsupported fields: notes/);
+  });
+  await t.test("top-level heading injection", () => {
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, [], plannerSections(contract, { designReview: "Review.\n## Forged section\nInjected." })), {}), /cannot inject a competing top-level heading/);
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, [], plannerSections(contract, { designReview: "Forged section\n===" })), {}), /cannot inject a competing top-level heading/);
+  });
+  await t.test("fence injection", () => {
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, [], plannerSections(contract, { acceptanceCriteria: "Evidence:\n```json\n{}\n```" })), {}), /cannot inject a Markdown fence/);
+  });
+  await t.test("no visible bounded step", () => {
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, [], plannerSections(contract, { stepsAndValidation: "Perform the work without a visible bounded step label." })), {}), /one to 40 visibly bounded steps; found 0/);
+  });
+  await t.test("object-valued contract required", () => {
+    const payload = { status: "ready", sections: plannerSections(contract), contract: JSON.stringify(contract), resolutions: [] };
+    assert.throws(() => decodePlannerOutput(JSON.stringify(payload), {}), /object-valued ExecutionContractV3/);
+  });
+  await t.test("existing V3 semantics remain authoritative", () => {
+    const invalid = contractFixture(1);
+    invalid.steps[0].outputs = [];
+    assert.throws(() => decodePlannerOutput(plannerOutput(invalid), {}), /nonempty array/);
+  });
+  await t.test("initial planning cannot invent resolutions", () => {
+    const invented = [{ findingId: "FAKE1", status: "resolved", changedLocations: ["steps.STEP1"], explanation: "Invented." }];
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, invented), {}), /cannot invent finding resolutions/);
+  });
+  await t.test("recovery requires changed canonical plan bytes", () => {
+    const output = plannerOutput(contract);
+    const decoded = decodePlannerOutput(output, {});
+    assert.throws(
+      () => decodePlannerOutput(output, { plan: { text: decoded.planMarkdown }, gap: "Current recovery gap", revision: digest(decoded.planMarkdown) }),
+      /recovery gap requires changed plan bytes/,
+    );
+  });
+  await t.test("current findings require changed canonical plan bytes", () => {
+    const initialOutput = plannerOutput(contract);
+    const initial = decodePlannerOutput(initialOutput, {});
+    const resolution = [{ findingId: "F1", status: "resolved", changedLocations: ["steps.STEP1"], explanation: "Claimed change." }];
+    const workflow = {
+      revision: digest(initial.planMarkdown),
+      planning: { reviewFindings: [{ id: "F1", severity: "material", summary: "Change required.", requiredChange: "Change the plan.", planLocations: ["steps.STEP1"] }] },
+    };
+    assert.throws(() => decodePlannerOutput(plannerOutput(contract, resolution), workflow), /review findings require a materially changed full plan/);
+  });
+});
+
+test("contract IDs retain their exact grammar and report it on filename-shaped IDs", () => {
+  for (const id of ["input.json", "nested/input", "_artifact"]) {
+    const contract = contractFixture(1);
+    contract.artifacts[0].id = id;
+    assert.throws(() => validateExecutionPlan(planText(contract)), error =>
+      error.message.includes(EXECUTION_CONTRACT_ID_PATTERN) && error.message.includes("path fields"));
+  }
+  for (const id of ["0-artifact_", "A".repeat(80)]) {
+    const contract = JSON.parse(JSON.stringify(contractFixture(1)).replaceAll('"ART1"', JSON.stringify(id)));
+    assert.equal(validateExecutionPlan(planText(contract)).artifacts[0].id, id);
+  }
+});
+
 test("plan validation rejects stale references, cycles, non-actionable finals, and gate/artifact disagreement", async t => {
   const cases = [
     ["requirement coverage", contract => { contract.steps[1].requires = ["REQ1"]; }, /Every requirement/],
@@ -293,7 +605,8 @@ test("plan validation rejects stale references, cycles, non-actionable finals, a
     ["forward dependency", contract => { contract.steps[0].dependsOn = ["STEP2"]; }, /earlier steps/],
     ["unknown input", contract => { contract.steps[1].inputs = ["UNKNOWN"]; }, /unknown input artifact/],
     ["unknown output", contract => { contract.steps[0].outputs = ["UNKNOWN"]; }, /unknown output artifact/],
-    ["unknown capability", contract => { contract.steps[0].capabilities = ["UNKNOWN"]; }, /unknown capability/],
+    ["unknown capability", contract => { contract.steps[1].capabilities = ["UNKNOWN"]; }, /unknown capability/],
+    ["artifact IDs are not requirements", contract => { contract.steps[0].requires = [contract.artifacts[0].id]; }, /requirement/],
     ["missing final acceptance", contract => { contract.artifacts[1].acceptance = "none"; }, /final artifact needs command or human/],
     ["human without rubric", contract => { contract.artifacts[1].acceptance = "human"; }, /human acceptance needs/],
     ["unreciprocated gate", contract => { contract.artifacts[1].gates = ["GATE1"]; }, /must list the artifact as evidence|bindings must be reciprocal/],
@@ -304,6 +617,16 @@ test("plan validation rejects stale references, cycles, non-actionable finals, a
     mutate(contract);
     assert.throws(() => validateExecutionPlan(planText(contract)), expected);
   });
+});
+
+test("artifact coverage excludes immutable inputs and reports the exact expected produced IDs", () => {
+  const contract = contractFixture(1);
+  contract.artifacts.push({ id: "INPUT", path: "input.json", kind: "evidence", acceptance: "none", gates: [] });
+  validateExecutionPlan(planText(contract));
+  contract.selfCheck.artifactCoverage.push({ ...contract.selfCheck.artifactCoverage[0], artifactId: "INPUT" });
+  assert.throws(() => validateExecutionPlan(planText(contract)), error =>
+    error.message.includes("no immutable input evidence") &&
+    error.message.includes(`Expected artifact IDs: ${contract.artifacts[0].id}.`));
 });
 
 test("canonical plan paths fail closed for Windows traversal, drive, ADS, controller state, and case collisions", () => {
@@ -346,6 +669,24 @@ test("role provenance bundles bind exact selected bytes and reject silent trunca
   assert.throws(() => validateRoleContextBundle({ ...bundle, items: [{ ...item, content: `${content} changed` }] }), /byte count|digest/);
   const oversized = "x".repeat(128 * 1024 + 1);
   assert.throws(() => createRoleContextBundle([{ kind: "source_excerpt", source: "source.txt", sha256: digest(oversized), selection: { startLine: 1, endLine: 2 }, bytes: Buffer.byteLength(oversized), content: oversized }]), /source excerpt exceeds/);
+
+  const responseSchema = { type: "object", properties: { status: { enum: ["ready"] } } };
+  const request = {
+    workflowId: "roles",
+    contextId: "planner-context",
+    role: "planner",
+    inputRevision: bundle.bundleRevision,
+    systemPrompt: "Plan only from selected provenance.",
+    prompt: "Return the exact Planner envelope.",
+    bundle,
+    responseSchema,
+  };
+  const validated = validateSolarRoleRequest(request, "roles");
+  assert.deepEqual(validated.responseSchema, responseSchema);
+  assert.notEqual(validated.responseSchema, responseSchema);
+  assert.notEqual(validated.responseSchema.properties, responseSchema.properties);
+  assert.throws(() => validateSolarRoleRequest({ ...request, role: "critic" }, "roles"), /Only Planner role requests/);
+  assert.throws(() => validateSolarRoleRequest({ ...request, responseSchema: [] }, "roles"), /JSON Schema object/);
 });
 
 test("role attempt budgets count SDK sessions and repairs before dispatch", () => {
@@ -371,6 +712,47 @@ test("role attempt budgets count SDK sessions and repairs before dispatch", () =
   assert.throws(() => reserveRoleAttempt(repairs, { attemptId: "REPAIR4", contextId: "REPAIRCTX4", role: "critic", inputRevision: digest("repair 4"), planRevision: digest("plan"), repair: true, repairOf, startedAt: 800_000, deadlineAt: 980_000 }), /repair budget exhausted/);
 });
 
+test("beginPlanRevision binds raw Planner bytes, canonical artifact bytes, artifact revision, and settled attempt", () => fixture(workspace => {
+  const workflow = initializeLoop({ id: "wire-binding", stage: "plan", status: "active", cwd: workspace, workspaceId: workspaceIdentity(workspace), autoExecute: true });
+  const payload = { status: "ready", sections: plannerSections(), contract: contractFixture(), resolutions: [] };
+  const visibleOutput = `\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
+  const decoded = decodePlannerOutput(visibleOutput, workflow);
+  const inputRevision = digest("wire-binding Planner bundle");
+  const role = roleSuccess(workflow, { role: "planner", inputRevision, outputRevision: digest(visibleOutput) });
+  const artifact = {
+    path: path.join(workspace, ".solar-workflow", workflow.id, "plan.md"),
+    text: decoded.planMarkdown,
+    revision: digest(decoded.planMarkdown),
+  };
+  const options = { plannerReceipt: role.receipt, inputRevision, visibleOutput, resolutions: decoded.resolutions };
+
+  assert.throws(
+    () => beginPlanRevision(role.workflow, { ...artifact, text: `${artifact.text}\n`, revision: digest(`${artifact.text}\n`) }, options),
+    /artifact bytes do not match the canonical plan/,
+  );
+  assert.throws(
+    () => beginPlanRevision(role.workflow, { ...artifact, revision: digest("forged artifact revision") }, options),
+    /artifact revision does not match/,
+  );
+  assert.throws(
+    () => beginPlanRevision(role.workflow, artifact, { ...options, visibleOutput: `${visibleOutput}\n` }),
+    /output receipt does not bind/,
+  );
+  for (const status of ["cancelled", "stale"]) {
+    const rejected = {
+      ...role.workflow,
+      roleAttempts: role.workflow.roleAttempts.map(attempt => attempt.attemptId === role.receipt.attemptId ? { ...attempt, status } : attempt),
+    };
+    assert.throws(() => beginPlanRevision(rejected, artifact, options), /successfully settled/);
+  }
+
+  const accepted = beginPlanRevision(role.workflow, artifact, options);
+  assert.equal(accepted.planning.plannerOutputRevision, digest(visibleOutput));
+  assert.equal(accepted.plan.text, decoded.planMarkdown);
+  assert.equal(accepted.plan.revision, digest(decoded.planMarkdown));
+  assert.notEqual(accepted.planning.plannerOutputRevision, accepted.plan.revision);
+}));
+
 test("plan reviews keep receipts, findings, resolutions, and revision state separate", () => fixture(workspace => {
   let workflow = initializeLoop({ id: "reviews", stage: "plan", status: "active", cwd: workspace, workspaceId: workspaceIdentity(workspace), autoExecute: true });
   workflow = beginReviewing(workflow);
@@ -388,17 +770,58 @@ test("plan reviews keep receipts, findings, resolutions, and revision state sepa
 
   const revisedContract = structuredClone(workflow.plan.contract);
   revisedContract.steps[1].actions.push("Replace the final file atomically after validation.");
-  const revisedText = planText(revisedContract);
+  const visibleOutput = plannerOutput(revisedContract, [{
+    findingId: "ARCH1",
+    status: "resolved",
+    changedLocations: ["steps.STEP2.actions"],
+    explanation: "Added an atomic replacement action to the complete revised plan.",
+  }]);
+  const decoded = decodePlannerOutput(visibleOutput, workflow);
+  const revisedText = decoded.planMarkdown;
   assert.throws(() => validateFindingResolutions([{ version: 1, findingId: "ARCH1", fromPlanRevision: digest("stale"), toPlanRevision: digest(revisedText), status: "resolved", changedLocations: ["steps.STEP2.actions"], explanation: "Added the action." }], workflow.planning.reviewFindings, { fromPlanRevision: workflow.revision, toPlanRevision: digest(revisedText) }), /stale/);
 
-  const resolutions = [{ version: 1, findingId: "ARCH1", fromPlanRevision: workflow.revision, toPlanRevision: digest(revisedText), status: "resolved", changedLocations: ["steps.STEP2.actions"], explanation: "Added an atomic replacement action to the complete revised plan." }];
   const inputRevision = digest("revised planner bundle");
-  const planner = roleSuccess(workflow, { role: "planner", inputRevision, planRevision: workflow.revision, outputRevision: digest(revisedText) });
-  const revised = beginPlanRevision(planner.workflow, { path: workflow.plan.path, text: revisedText, revision: digest(revisedText) }, { plannerReceipt: planner.receipt, inputRevision, visibleOutput: revisedText, resolutions });
+  const planner = roleSuccess(workflow, { role: "planner", inputRevision, planRevision: workflow.revision, outputRevision: digest(visibleOutput) });
+  const revised = beginPlanRevision(planner.workflow, { path: workflow.plan.path, text: revisedText, revision: digest(revisedText) }, { plannerReceipt: planner.receipt, inputRevision, visibleOutput, resolutions: decoded.resolutions });
   assert.equal(revised.planning.revisionState, "awaiting_reviews");
   assert.deepEqual(revised.planning.findingResolutions.map(item => item.findingId), ["ARCH1"]);
+  assert.equal(revised.planning.findingResolutions[0].fromPlanRevision, workflow.revision);
+  assert.equal(revised.planning.findingResolutions[0].toPlanRevision, digest(revisedText));
   assert.deepEqual(revised.planning.reviewFindings, []);
   assert.equal(revised.planning.history.length, 1);
+}));
+
+test("beginPlanRevision rejects a forged resolution that differs from the raw Planner mapping", () => fixture(workspace => {
+  let workflow = beginReviewing(initializeLoop({ id: "resolution-binding", stage: "plan", status: "active", cwd: workspace, workspaceId: workspaceIdentity(workspace), autoExecute: true }));
+  workflow = appendReview(workflow, "approach_reviewer", {
+    verdict: "revise",
+    findings: [{
+      id: "ARCH1",
+      severity: "material",
+      summary: "The final replacement is not atomic.",
+      requiredChange: "Add an atomic replacement action.",
+      planLocations: ["steps.STEP2.actions"],
+    }],
+  });
+  workflow = appendReview(workflow, "critic");
+
+  const contract = structuredClone(workflow.plan.contract);
+  contract.steps[1].actions.push("Atomically replace the validated final artifact.");
+  const visibleOutput = plannerOutput(contract, [{
+    findingId: "ARCH1",
+    status: "resolved",
+    changedLocations: ["steps.STEP2.actions"],
+    explanation: "The revised action now requires atomic replacement.",
+  }]);
+  const decoded = decodePlannerOutput(visibleOutput, workflow);
+  const inputRevision = digest("resolution-binding Planner bundle");
+  const role = roleSuccess(workflow, { role: "planner", inputRevision, planRevision: workflow.revision, outputRevision: digest(visibleOutput) });
+  const artifact = { path: workflow.plan.path, text: decoded.planMarkdown, revision: digest(decoded.planMarkdown) };
+  const forged = decoded.resolutions.map(resolution => ({ ...resolution, explanation: "A different but structurally valid explanation." }));
+  assert.throws(
+    () => beginPlanRevision(role.workflow, artifact, { plannerReceipt: role.receipt, inputRevision, visibleOutput, resolutions: forged }),
+    /do not match the mappings derived from the exact visible Planner output/,
+  );
 }));
 
 test("a Critic material finding forces a full revision and both fresh re-reviews", () => fixture(workspace => {
@@ -420,19 +843,17 @@ test("a Critic material finding forces a full revision and both fresh re-reviews
 
   const revisedContract = structuredClone(workflow.plan.contract);
   revisedContract.gates[1].pass = "Outcome 2 exists, matches the current approved bytes, and satisfies its exact requirement.";
-  const revisedText = planText(revisedContract);
-  const resolutions = [{
-    version: 1,
+  const visibleOutput = plannerOutput(revisedContract, [{
     findingId: "CRIT1",
-    fromPlanRevision: workflow.revision,
-    toPlanRevision: digest(revisedText),
     status: "resolved",
     changedLocations: ["gates.GATE2.pass"],
     explanation: "The complete revised plan now states the exact final-byte acceptance condition.",
-  }];
+  }]);
+  const decoded = decodePlannerOutput(visibleOutput, workflow);
+  const revisedText = decoded.planMarkdown;
   const inputRevision = digest("critic revision planner bundle");
-  const planner = roleSuccess(workflow, { role: "planner", inputRevision, planRevision: workflow.revision, outputRevision: digest(revisedText) });
-  let revised = beginPlanRevision(planner.workflow, { path: workflow.plan.path, text: revisedText, revision: digest(revisedText) }, { plannerReceipt: planner.receipt, inputRevision, visibleOutput: revisedText, resolutions });
+  const planner = roleSuccess(workflow, { role: "planner", inputRevision, planRevision: workflow.revision, outputRevision: digest(visibleOutput) });
+  let revised = beginPlanRevision(planner.workflow, { path: workflow.plan.path, text: revisedText, revision: digest(revisedText) }, { plannerReceipt: planner.receipt, inputRevision, visibleOutput, resolutions: decoded.resolutions });
   revised = appendReview(revised, "approach_reviewer");
   revised = appendReview(revised, "critic");
   assert.equal(revised.planning.revisionState, "ready_to_complete");

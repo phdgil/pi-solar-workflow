@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 const CASE_ORDER = [
   "research-local",
@@ -6,6 +7,8 @@ const CASE_ORDER = [
   "plan-software",
   "execute-summary",
   "execute-inventory-heldout",
+  "execute-config-overlay-heldout",
+  "execute-dependency-readiness-heldout",
 ];
 
 const SUMMARY_INPUT = [
@@ -22,6 +25,36 @@ const INVENTORY_INPUT = [
   { sku: "xy-9", location: "north", quantity: 0 },
   { sku: "Xy-9", location: "north", quantity: 5 },
   { sku: "cd-2", location: "south", quantity: 1 },
+];
+
+const CONFIG_OVERLAY_INPUT = {
+  base: {
+    retries: 3,
+    strictMode: true,
+    theme: "dark",
+    timeoutMs: 5000,
+  },
+  operations: [
+    { key: "timeoutMs", action: "set", value: 0 },
+    { key: "region", action: "set", value: "eu-west" },
+    { key: "theme", action: "set", value: "dark" },
+    { key: "strictMode", action: "remove" },
+    { key: "missingFlag", action: "remove" },
+    { key: "region", action: "set", value: "ap-south" },
+    { key: "telemetry", action: "set", value: false },
+  ],
+};
+
+const DEPENDENCY_READINESS_INPUT = [
+  { id: "deploy", state: "pending", dependsOn: ["package", "security"] },
+  { id: "lint", state: "done", dependsOn: [] },
+  { id: "package", state: "pending", dependsOn: ["lint", "unit"] },
+  { id: "unit", state: "pending", dependsOn: [] },
+  { id: "docs", state: "done", dependsOn: [] },
+  { id: "security", state: "pending", dependsOn: ["unit"] },
+  { id: "announce", state: "pending", dependsOn: ["deploy", "docs"] },
+  { id: "publish-docs", state: "pending", dependsOn: ["docs"] },
+  { id: "archive", state: "done", dependsOn: [] },
 ];
 
 function canonical(value) {
@@ -81,6 +114,40 @@ function inventoryExpected(input) {
 
 const SUMMARY_EXPECTED = summaryExpected(SUMMARY_INPUT);
 const INVENTORY_EXPECTED = inventoryExpected(INVENTORY_INPUT);
+const CONFIG_OVERLAY_EXPECTED = {
+  config: {
+    region: "ap-south",
+    retries: 3,
+    telemetry: false,
+    theme: "dark",
+    timeoutMs: 0,
+  },
+  events: [
+    { index: 0, key: "timeoutMs", outcome: "updated", previousValue: 5000, nextValue: 0 },
+    { index: 1, key: "region", outcome: "added", previousValue: null, nextValue: "eu-west" },
+    { index: 2, key: "theme", outcome: "unchanged", previousValue: "dark", nextValue: "dark" },
+    { index: 3, key: "strictMode", outcome: "removed", previousValue: true, nextValue: null },
+    { index: 4, key: "missingFlag", outcome: "absent", previousValue: null, nextValue: null },
+    { index: 5, key: "region", outcome: "updated", previousValue: "eu-west", nextValue: "ap-south" },
+    { index: 6, key: "telemetry", outcome: "added", previousValue: null, nextValue: false },
+  ],
+  operationCount: 7,
+  changedCount: 5,
+};
+const DEPENDENCY_READINESS_EXPECTED = {
+  tasks: [
+    { id: "announce", status: "blocked", blockers: ["deploy"] },
+    { id: "archive", status: "complete", blockers: [] },
+    { id: "deploy", status: "blocked", blockers: ["package", "security"] },
+    { id: "docs", status: "complete", blockers: [] },
+    { id: "lint", status: "complete", blockers: [] },
+    { id: "package", status: "blocked", blockers: ["unit"] },
+    { id: "publish-docs", status: "ready", blockers: [] },
+    { id: "security", status: "blocked", blockers: ["unit"] },
+    { id: "unit", status: "ready", blockers: [] },
+  ],
+  counts: { complete: 3, ready: 2, blocked: 4 },
+};
 
 const SUMMARY_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -126,6 +193,89 @@ assert.deepEqual(actual, expected);
 console.log("inventory fixture passed");
 `;
 
+const CONFIG_OVERLAY_EVALUATOR = `import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const input = JSON.parse(readFileSync("config-operations.json", "utf8"));
+const actual = JSON.parse(readFileSync("resolved-config.json", "utf8"));
+assert.ok(input && typeof input === "object" && !Array.isArray(input));
+assert.deepEqual(Object.keys(input).sort(), ["base", "operations"]);
+assert.ok(input.base && typeof input.base === "object" && !Array.isArray(input.base));
+assert.ok(Array.isArray(input.operations));
+const validValue = value => typeof value === "string" || typeof value === "boolean" || Number.isFinite(value);
+for (const [key, value] of Object.entries(input.base)) {
+  assert.ok(key.length > 0);
+  assert.ok(validValue(value));
+}
+const config = { ...input.base };
+const events = [];
+let changedCount = 0;
+for (const [index, operation] of input.operations.entries()) {
+  assert.ok(operation && typeof operation === "object" && !Array.isArray(operation));
+  assert.ok(typeof operation.key === "string" && operation.key.length > 0);
+  assert.ok(operation.action === "set" || operation.action === "remove");
+  const expectedKeys = operation.action === "set" ? ["action", "key", "value"] : ["action", "key"];
+  assert.deepEqual(Object.keys(operation).sort(), expectedKeys);
+  const present = Object.hasOwn(config, operation.key);
+  const previousValue = present ? config[operation.key] : null;
+  let outcome;
+  let nextValue = null;
+  if (operation.action === "set") {
+    assert.ok(validValue(operation.value));
+    nextValue = operation.value;
+    outcome = !present ? "added" : Object.is(previousValue, nextValue) ? "unchanged" : "updated";
+    config[operation.key] = nextValue;
+  } else if (present) {
+    outcome = "removed";
+    delete config[operation.key];
+  } else {
+    outcome = "absent";
+  }
+  if (outcome === "added" || outcome === "updated" || outcome === "removed") changedCount += 1;
+  events.push({ index, key: operation.key, outcome, previousValue, nextValue });
+}
+const orderedConfig = Object.fromEntries(Object.entries(config).sort(([left], [right]) => left.localeCompare(right, "en")));
+const expected = { config: orderedConfig, events, operationCount: input.operations.length, changedCount };
+assert.deepEqual(Object.keys(actual.config), Object.keys(orderedConfig));
+assert.deepEqual(actual, expected);
+console.log("config overlay fixture passed");
+`;
+
+const DEPENDENCY_READINESS_EVALUATOR = `import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const input = JSON.parse(readFileSync("tasks.json", "utf8"));
+const actual = JSON.parse(readFileSync("dependency-readiness.json", "utf8"));
+assert.ok(Array.isArray(input));
+const byId = new Map();
+for (const row of input) {
+  assert.ok(row && typeof row === "object" && !Array.isArray(row));
+  assert.deepEqual(Object.keys(row).sort(), ["dependsOn", "id", "state"]);
+  assert.ok(typeof row.id === "string" && row.id.length > 0);
+  assert.equal(byId.has(row.id), false);
+  assert.ok(row.state === "done" || row.state === "pending");
+  assert.ok(Array.isArray(row.dependsOn));
+  assert.ok(row.dependsOn.every(dependency => typeof dependency === "string" && dependency.length > 0 && dependency !== row.id));
+  assert.equal(new Set(row.dependsOn).size, row.dependsOn.length);
+  byId.set(row.id, row);
+}
+for (const row of input) {
+  assert.ok(row.dependsOn.every(dependency => byId.has(dependency)));
+}
+const counts = { complete: 0, ready: 0, blocked: 0 };
+const tasks = [...input].sort((left, right) => left.id.localeCompare(right.id, "en")).map(row => {
+  const blockers = row.state === "done"
+    ? []
+    : row.dependsOn.filter(dependency => byId.get(dependency).state !== "done").sort((left, right) => left.localeCompare(right, "en"));
+  const status = row.state === "done" ? "complete" : blockers.length === 0 ? "ready" : "blocked";
+  counts[status] += 1;
+  return { id: row.id, status, blockers };
+});
+const expected = { tasks, counts };
+assert.deepEqual(actual, expected);
+console.log("dependency readiness fixture passed");
+`;
+
 const PLAN_INPUT = [
   { id: 2, label: " Beta " },
   { id: 1, label: "Alpha" },
@@ -164,7 +314,7 @@ const FIXTURES = {
     outputPaths: [],
     allowedReadPaths: [],
     evaluatorCommand: null,
-    initialPrompt: "/skill:solar-interview --plan-only This is a synthetic, workspace-local specification exercise. records.json is guaranteed to be a valid JSON array whose entries each have exactly id:number and name:string. The intended deliverable is report.json containing a JSON array of objects with exactly id and normalizedName fields, sorted by ascending numeric id. Names are trimmed and lowercased. Duplicate ids are guaranteed to have the same name after that normalization and collapse to one record, so no conflict tie-break is needed. Only valid input is in scope. Success means a local evaluator confirms those exact invariants. Do not execute anything; assess planning readiness one material gap at a time.",
+    initialPrompt: "/skill:solar-interview --plan-only This is a synthetic specification-only exercise: no files are provided and no filesystem reads or writes are authorized, including workspace, session-state, and package files. records.json and report.json are prospective names, not existing files to inspect. For this specification, records.json is guaranteed to be a valid JSON array whose entries each have exactly id:number and name:string. The intended deliverable is report.json containing a JSON array of objects with exactly id and normalizedName fields, sorted by ascending numeric id. Names are trimmed and lowercased. Duplicate ids are guaranteed to have the same name after that normalization and collapse to one record, so no conflict tie-break is needed. Only valid input is in scope. Success means a local evaluator confirms those exact invariants. Do not execute anything; assess planning readiness one material gap at a time.",
     answers: [
       "Keep the earlier JSON requirement. Also require the only output to be YAML, not JSON. These requirements are intentionally incompatible and I have not chosen which one wins yet; preserve that contradiction rather than guessing.",
       "Authoritative correction: withdraw the YAML-only statement completely. JSON is the required and only output format. All other stated schema, sorting, duplicate, and normalization requirements remain unchanged.",
@@ -208,9 +358,9 @@ const FIXTURES = {
   },
   "execute-inventory-heldout": {
     name: "execute-inventory-heldout",
-    description: "Held-out guarded execution normalizes and aggregates a distinct inventory data shape.",
+    description: "Previously held-out inventory case observed in the prior campaign; retained as development-only.",
     kind: "execute",
-    heldOut: true,
+    heldOut: false,
     files: {
       "inventory.json": jsonFile(INVENTORY_INPUT),
       "evaluator.mjs": INVENTORY_EVALUATOR,
@@ -218,13 +368,53 @@ const FIXTURES = {
     outputPaths: ["inventory-report.json"],
     allowedReadPaths: ["inventory.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out fixture. Read inventory.json and, only after exact goal confirmation, reviewed planning, and approval, create inventory-report.json. Normalize each sku with trim then uppercase, merge rows by normalized sku, sum nonnegative integer quantity, and list unique locations sorted ascending. The result has exactly items, skuCount, and totalQuantity; items sort by sku and each item has exactly sku, totalQuantity, and locations. The objective local acceptance command is exactly `node evaluator.mjs`. inventory.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of inventory-report.json, and at most that exact evaluator command. No installs, other commands, network, publishing, credentials, deletion, or system mutation.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic development fixture. Read inventory.json and, only after exact goal confirmation, reviewed planning, and approval, create inventory-report.json. Normalize each sku with trim then uppercase, merge rows by normalized sku, sum nonnegative integer quantity, and list unique locations sorted ascending. The result has exactly items, skuCount, and totalQuantity; items sort by sku and each item has exactly sku, totalQuantity, and locations. The objective local acceptance command is exactly `node evaluator.mjs`. inventory.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of inventory-report.json, and at most that exact evaluator command. No installs, other commands, network, publishing, credentials, deletion, or system mutation.",
     answers: [
       "All material decisions are fixed: sku normalization is trim then uppercase, locations are exact case-sensitive strings deduplicated and sorted ascending, zero quantity rows still contribute their location, all quantities are nonnegative integers, and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
       "There are no additional user choices. Keep inventory.json and evaluator.mjs immutable and inventory-report.json as the sole mutable output. Do not add artifacts, capabilities, commands, or a human rubric.",
     ],
     goalPolicy: { requiredPaths: ["inventory.json", "inventory-report.json"], format: "json" },
     expectedOutput: INVENTORY_EXPECTED,
+  },
+  "execute-config-overlay-heldout": {
+    name: "execute-config-overlay-heldout",
+    description: "Post-C14 held-out guarded execution applies an ordered configuration overlay with an exact change ledger.",
+    kind: "execute",
+    heldOut: true,
+    files: {
+      "config-operations.json": jsonFile(CONFIG_OVERLAY_INPUT),
+      "evaluator.mjs": CONFIG_OVERLAY_EVALUATOR,
+    },
+    outputPaths: ["resolved-config.json"],
+    allowedReadPaths: ["config-operations.json", "evaluator.mjs"],
+    evaluatorCommand: "node evaluator.mjs",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read config-operations.json and, only after exact goal confirmation, full reviewed planning, and approval, create resolved-config.json. The immutable input has exactly base and operations. base is an object whose nonempty keys map only to JSON strings, finite numbers, or booleans. Apply operations in input order to a copy of base. Each operation has a nonempty key and action set or remove; set has exactly one value of the same allowed scalar types, while remove has no value. A set is added when its key is absent, unchanged when the current value is exactly equal, and updated otherwise; it always leaves the supplied value. A remove is removed when its key is present and absent otherwise. The JSON result has exactly config, events, operationCount, and changedCount. config is the final object with keys sorted ascending. events stays in operation order and has exactly index, key, outcome, previousValue, and nextValue; index is zero-based, missing previous values and all remove next values are null, and set nextValue is its supplied value. operationCount is the number of operations. changedCount counts only added, updated, and removed outcomes. Preserve false and zero as values. The objective local acceptance command is exactly `node evaluator.mjs`. config-operations.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing resolved-config.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
+    answers: [
+      "All material decisions are fixed: operations apply sequentially; equality is exact for the allowed JSON scalar values; false and zero are not missing; absent and unchanged operations stay in the ledger but do not increase changedCount; output keys and event fields are exactly as stated; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep config-operations.json and evaluator.mjs immutable and resolved-config.json as the sole mutable JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, or a human rubric.",
+    ],
+    goalPolicy: { requiredPaths: ["config-operations.json", "resolved-config.json"], format: "json" },
+    expectedOutput: CONFIG_OVERLAY_EXPECTED,
+  },
+  "execute-dependency-readiness-heldout": {
+    name: "execute-dependency-readiness-heldout",
+    description: "Post-C14 held-out guarded execution derives direct dependency readiness and blocker sets.",
+    kind: "execute",
+    heldOut: true,
+    files: {
+      "tasks.json": jsonFile(DEPENDENCY_READINESS_INPUT),
+      "evaluator.mjs": DEPENDENCY_READINESS_EVALUATOR,
+    },
+    outputPaths: ["dependency-readiness.json"],
+    allowedReadPaths: ["tasks.json", "evaluator.mjs"],
+    evaluatorCommand: "node evaluator.mjs",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read tasks.json and, only after exact goal confirmation, full reviewed planning, and approval, create dependency-readiness.json. The immutable input is a JSON array of objects with exactly id, state, and dependsOn. Every id is unique and nonempty. state is exactly done or pending. dependsOn is a duplicate-free array of other existing ids; the supplied graph is acyclic. A done task is complete with no blockers. A pending task is ready only when every direct dependency has state done; otherwise it is blocked, with blockers equal to its direct dependency ids whose state is not done. A pending dependency remains a blocker even if that dependency is itself ready, so do not substitute transitive inference. The JSON result has exactly tasks and counts. tasks contains one object per input task with exactly id, status, and blockers, sorted ascending by id. Each blockers array is sorted ascending. counts has exactly complete, ready, and blocked and counts all tasks. The objective local acceptance command is exactly `node evaluator.mjs`. tasks.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing dependency-readiness.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
+    answers: [
+      "All material decisions are fixed: readiness uses direct dependency states from the immutable input; only done satisfies a dependency; pending tasks with no blockers are ready; done tasks are complete; task and blocker ordering is ascending; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep tasks.json and evaluator.mjs immutable and dependency-readiness.json as the sole mutable JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, or a human rubric.",
+    ],
+    goalPolicy: { requiredPaths: ["tasks.json", "dependency-readiness.json"], format: "json" },
+    expectedOutput: DEPENDENCY_READINESS_EXPECTED,
   },
 };
 
@@ -240,7 +430,9 @@ export function listHarnessFixtures() {
 export function getHarnessFixture(name) {
   const fixture = FIXTURES[name];
   if (!fixture) throw new Error(`Unknown harness case: ${String(name)}`);
-  return structuredClone(fixture);
+  const result = structuredClone(fixture);
+  if (result.kind === "execute") result.initialPrompt += " For this synthetic case, use ExecutionContractV3 domain software; the acceptance harness requires the software review route.";
+  return result;
 }
 
 export function fixtureManifest(name) {
@@ -462,6 +654,268 @@ function currentReviewReceipts(workflow) {
   return Object.values(workflow?.planning?.reviewReceipts ?? {}).filter(Boolean);
 }
 
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+
+function canonicalDigest(value) {
+  return sha256Text(JSON.stringify(canonical(value)));
+}
+
+function uniqueStringList(values) {
+  return Array.isArray(values)
+    && values.every(value => typeof value === "string")
+    && new Set(values).size === values.length;
+}
+
+function validEntryId(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && /^[^\s\u0000-\u001f\u007f]+$/u.test(value);
+}
+
+function exactStringSet(actual, expected) {
+  return uniqueStringList(actual)
+    && uniqueStringList(expected)
+    && actual.length === expected.length
+    && sameValue([...actual].sort(), [...expected].sort());
+}
+
+function currentArtifactTableRevision(contract) {
+  if (!Array.isArray(contract?.artifacts) || !contract.artifacts.every(artifact =>
+    artifact && typeof artifact === "object"
+    && typeof artifact.id === "string"
+    && typeof artifact.path === "string"
+    && Array.isArray(artifact.gates)
+    && artifact.gates.every(gateId => typeof gateId === "string"))) return null;
+  const descriptors = contract.artifacts.map(artifact => ({
+    id: artifact.id,
+    path: artifact.path,
+    kind: artifact.kind,
+    acceptance: artifact.acceptance,
+    gates: [...artifact.gates].sort(),
+  })).sort((left, right) => left.id.localeCompare(right.id));
+  return canonicalDigest(descriptors);
+}
+
+function receiptMatchesDescriptor(receipt, descriptor, afterFiles) {
+  if (!receipt || typeof receipt !== "object" || !descriptor) return false;
+  const observed = afterFiles?.[descriptor.path];
+  return receipt.artifactId === descriptor.id
+    && receipt.path === descriptor.path
+    && SHA256_PATTERN.test(receipt.hash ?? "")
+    && Number.isInteger(receipt.bytes)
+    && receipt.bytes >= 0
+    && observed?.type === "file"
+    && observed.sha256 === receipt.hash
+    && observed.bytes === receipt.bytes;
+}
+
+function manifestMatchesCurrent(manifest, workflow, kinds, artifacts, afterFiles) {
+  if (!manifest || typeof manifest !== "object"
+    || manifest.planRevision !== workflow.revision
+    || manifest.artifactTableRevision !== workflow.artifactTableRevision
+    || !exactStringSet(manifest.kinds, kinds)
+    || !Array.isArray(manifest.files)) return false;
+  const expected = artifacts.filter(artifact => kinds.includes(artifact?.kind));
+  if (!exactStringSet(manifest.files.map(file => file?.artifactId), expected.map(artifact => artifact.id))) return false;
+  const descriptors = new Map(expected.map(artifact => [artifact.id, artifact]));
+  return manifest.files.every(file => receiptMatchesDescriptor(file, descriptors.get(file?.artifactId), afterFiles));
+}
+
+function commandGateResultsMatch(workflow, gates, artifacts, afterFiles) {
+  const results = workflow.finalChecks;
+  if (!Array.isArray(results)
+    || !exactStringSet(results.map(result => result?.id), gates.map(gate => gate.id))) return false;
+  const descriptors = new Map(artifacts.map(artifact => [artifact.id, artifact]));
+  const acceptanceFiles = new Map((workflow.acceptanceManifest?.files ?? []).map(file => [file?.artifactId, file]));
+  for (const result of results) {
+    const gate = gates.find(candidate => candidate.id === result.id);
+    if (!gate
+      || result.kind !== "command"
+      || result.acceptance !== "current_command"
+      || result.passed !== true
+      || result.code !== 0
+      || result.killed !== false
+      || typeof result.stdout !== "string"
+      || typeof result.stderr !== "string"
+      || !Array.isArray(result.errors)
+      || result.errors.length !== 0
+      || !Array.isArray(result.files)
+      || !exactStringSet(result.files.map(file => file?.artifactId), gate.evidence)) return false;
+    for (const file of result.files) {
+      const descriptor = descriptors.get(file.artifactId);
+      if (!receiptMatchesDescriptor(file, descriptor, afterFiles)) return false;
+      if (descriptor.kind !== "intermediate") {
+        const accepted = acceptanceFiles.get(file.artifactId);
+        if (!accepted
+          || accepted.path !== file.path
+          || accepted.hash !== file.hash
+          || accepted.bytes !== file.bytes) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function normalizedWorkspaceIdentity(value) {
+  if (typeof value !== "string" || !value) return null;
+  const normalized = path.resolve(value).replaceAll("\\", "/").replace(/\/$/u, "");
+  return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+}
+
+function observedPlanMatchesCurrent(workflow, afterFiles) {
+  if (typeof workflow?.id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(workflow.id)
+    || typeof workflow.plan?.text !== "string") return false;
+  const relativePath = `.solar-workflow/${workflow.id}/plan.md`;
+  const cwdIdentity = normalizedWorkspaceIdentity(workflow.cwd);
+  const planPathIdentity = normalizedWorkspaceIdentity(workflow.plan?.path);
+  const expectedPlanPathIdentity = typeof workflow.cwd === "string"
+    ? normalizedWorkspaceIdentity(path.join(workflow.cwd, ...relativePath.split("/")))
+    : null;
+  const receipt = afterFiles?.[relativePath];
+  return workflow.plan?.relativePath === relativePath
+    && cwdIdentity !== null
+    && workflow.workspaceId === cwdIdentity
+    && workflow.plan.workspaceId === workflow.workspaceId
+    && planPathIdentity !== null
+    && planPathIdentity === expectedPlanPathIdentity
+    && receipt?.type === "file"
+    && receipt.sha256 === workflow.revision
+    && receipt.sha256 === workflow.plan.revision
+    && receipt.sha256 === sha256Text(workflow.plan.text)
+    && receipt.bytes === Buffer.byteLength(workflow.plan.text, "utf8");
+}
+
+function commandOnlyCompletionEvidence(fixture, observation) {
+  const workflow = observation.workflow ?? {};
+  const contract = workflow.plan?.contract;
+  const artifacts = Array.isArray(contract?.artifacts) ? contract.artifacts : [];
+  const gates = Array.isArray(contract?.gates) ? contract.gates : [];
+  const finals = artifacts.filter(artifact => artifact?.kind === "final");
+  let diskContract;
+  let diskContractError = null;
+  try {
+    diskContract = extractExecutionContract(workflow.plan?.text);
+  } catch (error) {
+    diskContractError = error instanceof Error ? error.message : String(error);
+  }
+  let fixtureSafety = { safe: false, violations: ["missing_current_contract"] };
+  try {
+    fixtureSafety = validateFixtureContract(contract, {
+      caseName: fixture.name,
+      allowedReadPaths: fixture.allowedReadPaths,
+      outputPaths: fixture.outputPaths,
+      evaluatorCommand: fixture.evaluatorCommand,
+      synthetic: true,
+    });
+  } catch (error) {
+    fixtureSafety = { safe: false, violations: [error instanceof Error ? error.message : String(error)] };
+  }
+
+  const artifactIds = artifacts.map(artifact => artifact?.id);
+  const gateIds = gates.map(gate => gate?.id);
+  const tableRevision = currentArtifactTableRevision(contract);
+  const state = workflow.version === 3 && workflow.stage === "execute" && workflow.status === "complete";
+  const currentContract = contract?.version === 3
+    && contract.domain === "software"
+    && fixtureSafety.safe
+    && sameValue(diskContract, contract)
+    && sameValue(diskContract, observation.planContract);
+  const currentAuthority = SHA256_PATTERN.test(workflow.revision ?? "")
+    && SHA256_PATTERN.test(workflow.artifactTableRevision ?? "")
+    && typeof workflow.plan?.text === "string"
+    && workflow.plan.text.length > 0
+    && sha256Text(workflow.plan.text) === workflow.revision
+    && workflow.plan.revision === workflow.revision
+    && workflow.approval === workflow.revision
+    && workflow.approvalArtifactTableRevision === workflow.artifactTableRevision
+    && workflow.planning?.revisionState === "reviewed"
+    && workflow.planning?.reviewedAtRevision === workflow.revision
+    && tableRevision === workflow.artifactTableRevision;
+  const observedPlan = observedPlanMatchesCurrent(workflow, observation.afterFiles);
+  const completeSteps = Array.isArray(contract?.steps)
+    && contract.steps.length > 0
+    && uniqueStringList(contract.steps.map(step => step?.id))
+    && contract.steps.every(step => workflow.results?.[step.id]?.passed === true);
+  const commandContract = finals.length > 0
+    && gates.length > 0
+    && uniqueStringList(artifactIds)
+    && uniqueStringList(gateIds)
+    && artifacts.every(artifact => artifact
+      && typeof artifact.path === "string"
+      && ["final", "intermediate", "evidence"].includes(artifact.kind)
+      && ["command", "none"].includes(artifact.acceptance)
+      && Array.isArray(artifact.gates)
+      && uniqueStringList(artifact.gates)
+      && artifact.gates.every(gateId => gates.find(gate => gate.id === gateId)?.evidence?.includes(artifact.id)))
+    && gates.every(gate => gate?.kind === "command"
+      && typeof gate.check === "string"
+      && Array.isArray(gate.evidence)
+      && gate.evidence.length > 0
+      && uniqueStringList(gate.evidence)
+      && gate.evidence.every(artifactId => artifacts.find(artifact => artifact.id === artifactId)?.gates?.includes(gate.id)))
+    && finals.every(artifact => artifact?.acceptance === "command"
+      && Array.isArray(artifact.gates)
+      && artifact.gates.length > 0
+      && uniqueStringList(artifact.gates)
+      && artifact.gates.every(gateId => gates.find(gate => gate.id === gateId)?.kind === "command"));
+  const finalManifestBefore = manifestMatchesCurrent(workflow.finalManifestBefore, workflow, ["final"], artifacts, observation.afterFiles);
+  const finalManifest = manifestMatchesCurrent(workflow.finalManifest, workflow, ["final"], artifacts, observation.afterFiles);
+  const acceptanceManifest = manifestMatchesCurrent(workflow.acceptanceManifest, workflow, ["evidence", "final"], artifacts, observation.afterFiles);
+  const stableFinalManifest = finalManifestBefore
+    && finalManifest
+    && sameValue(workflow.finalManifestBefore, workflow.finalManifest);
+  const finalFilesInAcceptance = finalManifest
+    && acceptanceManifest
+    && workflow.finalManifest.files.every(file => {
+      const accepted = workflow.acceptanceManifest.files.find(candidate => candidate.artifactId === file.artifactId);
+      return accepted
+        && accepted.path === file.path
+        && accepted.hash === file.hash
+        && accepted.bytes === file.bytes;
+    });
+  const gateResults = commandContract && acceptanceManifest
+    && commandGateResultsMatch(workflow, gates, artifacts, observation.afterFiles);
+  let expectedFinalReview = null;
+  try {
+    expectedFinalReview = canonicalDigest({
+      planRevision: workflow.revision,
+      artifactTableRevision: workflow.artifactTableRevision,
+      finalChecks: workflow.finalChecks,
+      finalManifest: workflow.finalManifest,
+    });
+  } catch {}
+  const finalReviewDigest = SHA256_PATTERN.test(workflow.finalReview ?? "")
+    && workflow.finalReview === expectedFinalReview;
+  const checks = {
+    state,
+    currentContract,
+    currentAuthority,
+    observedPlan,
+    completeSteps,
+    commandContract,
+    stableFinalManifest,
+    acceptanceManifest,
+    finalFilesInAcceptance,
+    gateResults,
+    finalReviewDigest,
+  };
+  return {
+    passed: Object.values(checks).every(Boolean),
+    evidence: {
+      status: workflow.status ?? null,
+      stage: workflow.stage ?? null,
+      planRevision: workflow.revision ?? null,
+      artifactTableRevision: workflow.artifactTableRevision ?? null,
+      finalReview: workflow.finalReview ?? null,
+      expectedFinalReview,
+      checks,
+      contractViolations: fixtureSafety.violations ?? [],
+      diskContractError,
+    },
+  };
+}
+
 function commonAssertions(fixture, observation) {
   const assertions = [];
   const before = observation.beforeFiles ?? {};
@@ -537,6 +991,74 @@ function planningAssertions(fixture, observation, expectedStatus) {
   ];
 }
 
+function confirmedSyntheticApproval(fixture, observation) {
+  const workflow = observation.workflow ?? {};
+  const eligibility = observation.approvalEligibility;
+  const approval = observation.approval;
+  const request = approval?.request;
+  const grant = approval?.grant;
+  let expectedEligibility = { approved: false, safe: false, decision: null, violations: ["missing_plan_contract"] };
+  try {
+    expectedEligibility = validateSyntheticApproval(observation.planContract, fixture.name);
+  } catch (error) {
+    expectedEligibility = { approved: false, safe: false, decision: null, violations: [error instanceof Error ? error.message : String(error)] };
+  }
+  const policyEligible = expectedEligibility.approved === true
+    && expectedEligibility.safe === true
+    && eligibility?.eligible === true
+    && eligibility.safe === true
+    && eligibility.decision === "eligible_synthetic_fixture"
+    && eligibility.policyDecision === "approved_synthetic_fixture"
+    && eligibility.caseName === fixture.name
+    && eligibility.evaluatorCommand === fixture.evaluatorCommand
+    && sameValue(eligibility.violations, expectedEligibility.violations);
+  const exactRequest = approval?.approved === true
+    && approval.safe === true
+    && approval.eligible === true
+    && approval.decision === "approved_current_host_grant"
+    && approval.eligibilityDecision === eligibility?.decision
+    && approval.caseName === fixture.name
+    && approval.evaluatorCommand === fixture.evaluatorCommand
+    && Array.isArray(approval.violations)
+    && approval.violations.length === 0
+    && request?.workflowId === workflow.id
+    && typeof workflow.id === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(workflow.id)
+    && SHA256_PATTERN.test(request?.planRevision ?? "")
+    && SHA256_PATTERN.test(request?.artifactTableRevision ?? "")
+    && request.dispatched === true
+    && typeof request.rpcRequestId === "string"
+    && /^harness-[A-Za-z0-9_-]+$/u.test(request.rpcRequestId)
+    && validEntryId(request.entryWatermark)
+    && request.planRevision === workflow.revision
+    && request.planRevision === workflow.plan?.revision
+    && request.artifactTableRevision === workflow.artifactTableRevision
+    && request.command === `/solar-workflow approve ${workflow.revision?.slice(0, 12)}`
+    && Number.isInteger(request.eventIndex)
+    && request.eventIndex >= 0
+    && observation.operationAudit?.approvalEventIndex === request.eventIndex;
+  const exactGrant = grant?.workflowId === request?.workflowId
+    && grant?.planRevision === request?.planRevision
+    && grant?.artifactTableRevision === request?.artifactTableRevision
+    && validEntryId(grant?.entryId)
+    && grant.entryId !== request?.entryWatermark
+    && validEntryId(grant?.observedLeafId)
+    && grant.observedLeafId !== request?.entryWatermark
+    && grant?.stage === "execute"
+    && grant?.status === "active";
+  const checks = { policyEligible, exactRequest, exactGrant };
+  return {
+    passed: Object.values(checks).every(Boolean),
+    evidence: {
+      eligibility: eligibility ?? null,
+      approval: approval ?? null,
+      expectedPolicyDecision: expectedEligibility.decision,
+      expectedPolicyViolations: expectedEligibility.violations,
+      checks,
+    },
+  };
+}
+
 function executeAssertions(fixture, observation) {
   let parsed;
   let parseError;
@@ -547,13 +1069,15 @@ function executeAssertions(fixture, observation) {
   const confirmedGoal = validateFixtureGoal(fixture.name, closure?.confirmedGoal?.sentence);
   const receipts = currentReviewReceipts(observation.workflow);
   const roles = new Set(receipts.map(receipt => receipt?.role));
+  const approved = confirmedSyntheticApproval(fixture, observation);
+  const completion = commandOnlyCompletionEvidence(fixture, observation);
   return [
     assertion("full_interview_exact_confirmation", closure?.mode === "normal" && closure?.completionAuthority === "user_confirmation" && Boolean(closure?.confirmedGoal), { mode: closure?.mode ?? null, completionAuthority: closure?.completionAuthority ?? null, hasConfirmedGoal: Boolean(closure?.confirmedGoal) }),
     assertion("confirmed_goal_matches_fixture_semantics", confirmedGoal.accepted, { decision: confirmedGoal.decision, goalSha256: confirmedGoal.goalSha256, violations: confirmedGoal.violations }),
     assertion("current_revision_has_all_role_receipts", ["planner", "approach_reviewer", "critic"].every(role => roles.has(role)), { roles: [...roles].sort(), receiptCount: receipts.length }),
-    assertion("synthetic_plan_was_safely_approved", observation.approval?.approved === true && observation.approval?.decision === "approved_synthetic_fixture", observation.approval ?? null),
+    assertion("synthetic_plan_was_safely_approved", approved.passed, approved.evidence),
     assertion("no_mutation_before_exact_approval", !(observation.operationAudit?.preApprovalMutations?.length), { attempts: observation.operationAudit?.preApprovalMutations ?? [] }),
-    assertion("command_only_workflow_completed", observation.workflow?.status === "complete" && observation.workflow?.stage === "execute" && !observation.workflow?.finalReview, { status: observation.workflow?.status, stage: observation.workflow?.stage, finalReview: observation.workflow?.finalReview ?? null }),
+    assertion("command_only_workflow_completed", completion.passed, completion.evidence),
     assertion("output_is_valid_json", parseError === undefined, { outputPath, error: parseError ?? null }),
     assertion("output_matches_independent_expected_value", parseError === undefined && sameValue(parsed, fixture.expectedOutput), { outputPath, actual: parsed ?? null, expected: fixture.expectedOutput }),
   ];

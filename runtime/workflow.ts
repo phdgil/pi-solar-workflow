@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { initializeLoop, nextStep, SNAPSHOT_STATE } from "./loop.ts";
+import { countPlanSteps } from "./planner-output.ts";
 import { publicWebUrl, webPolicy, webResearchContext } from "./web-research.ts";
 
 export const WORKFLOW_STATE = "solar-workflow-state-v1";
@@ -374,23 +375,6 @@ export function matchesWorkflowWorkspace(workflow: any, cwd: string) {
   } catch {
     return false;
   }
-}
-
-export function countPlanSteps(section: string) {
-  let fence: string | undefined;
-  let count = 0;
-  for (const line of section.split(/\r?\n/)) {
-    const boundary = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
-    if (boundary) {
-      if (!fence) fence = boundary;
-      else if (boundary[0] === fence[0] && boundary.length >= fence.length) fence = undefined;
-      continue;
-    }
-    if (fence) continue;
-    const label = line.replace(/^ {0,3}#{1,6}\s+/, "").replace(/\*\*|__/g, "").trimEnd();
-    if (/^ {0,3}(?:(?:Step\s+)?\d+(?:[.)]\s+|\s*[—–:-]\s+)|[-*+]\s+\[[ xX]\]\s+)\S/i.test(label)) count += 1;
-  }
-  return count;
 }
 
 export function validatePlanAlignment(review: any) {

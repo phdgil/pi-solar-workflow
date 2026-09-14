@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix as posixPath } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   LOOP_LIMITS,
   PROVENANCE_LIMITS,
@@ -167,7 +168,7 @@ export type SolarRoleDiagnostic = {
 };
 
 export interface SolarRoleSessionState {
-  model: { provider?: string; id?: string };
+  model: { provider?: string; id?: string; api?: string; samplingParams?: Record<string, unknown> };
   thinkingLevel: string;
   tools: unknown[];
   messages: unknown[];
@@ -523,6 +524,15 @@ function boundedPrompt(value: unknown, label: string) {
   return value;
 }
 
+function cloneResponseSchema(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("responseSchema must be a JSON Schema object.");
+  try {
+    return structuredClone(value) as Record<string, unknown>;
+  } catch {
+    throw new TypeError("responseSchema must be independently cloneable.");
+  }
+}
+
 function validateInput(input: SolarRoleInput): Omit<SolarRoleInput, "bundle"> & { bundle: RoleContextBundle } {
   if (!input || typeof input !== "object") throw new TypeError("Solar role input must be an object.");
   validateRoleName(input.role);
@@ -534,6 +544,8 @@ function validateInput(input: SolarRoleInput): Omit<SolarRoleInput, "bundle"> & 
   const repairOf = input.repairOf === undefined ? undefined : workflowIdentifier(input.repairOf, "repairOf");
   const systemPrompt = boundedPrompt(input.systemPrompt, "Solar role system prompt");
   const prompt = boundedPrompt(input.prompt, "Solar role prompt");
+  if (input.responseSchema !== undefined && input.role !== "planner") throw new TypeError("responseSchema is supported only for the Planner role.");
+  const responseSchema = input.responseSchema === undefined ? undefined : cloneResponseSchema(input.responseSchema);
   if (input.signal !== undefined && (typeof input.signal !== "object" || typeof input.signal.aborted !== "boolean" || typeof input.signal.addEventListener !== "function" || typeof input.signal.removeEventListener !== "function")) {
     throw new TypeError("signal must be an AbortSignal.");
   }
@@ -546,6 +558,7 @@ function validateInput(input: SolarRoleInput): Omit<SolarRoleInput, "bundle"> & 
     systemPrompt,
     prompt,
     bundle,
+    ...(responseSchema === undefined ? {} : { responseSchema }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
 }
@@ -590,9 +603,26 @@ function policyReceipt(): SolarRolePolicyReceipt {
   };
 }
 
-function assertSolarModel(model: unknown): asserts model is { provider: "upstage"; id: "solar-pro4"; reasoning: true; thinkingLevelMap: { max: unknown } } {
-  const candidate = model as { provider?: unknown; id?: unknown; reasoning?: unknown; thinkingLevelMap?: Record<string, unknown> } | undefined;
-  if (!candidate || candidate.provider !== SOLAR_ROLE_PROVIDER || candidate.id !== SOLAR_ROLE_MODEL_ID || candidate.reasoning !== true || candidate.thinkingLevelMap?.max === undefined || candidate.thinkingLevelMap.max === null) {
+type SolarMaxModel = Record<string, unknown> & {
+  provider: "upstage";
+  id: "solar-pro4";
+  reasoning: true;
+  thinkingLevelMap: { max: unknown };
+  api?: unknown;
+  samplingParams?: Record<string, unknown>;
+};
+
+function assertSolarModel(model: unknown): asserts model is SolarMaxModel {
+  const candidate = model as { provider?: unknown; id?: unknown; reasoning?: unknown; thinkingLevelMap?: Record<string, unknown>; samplingParams?: unknown } | undefined;
+  if (
+    !candidate
+    || candidate.provider !== SOLAR_ROLE_PROVIDER
+    || candidate.id !== SOLAR_ROLE_MODEL_ID
+    || candidate.reasoning !== true
+    || candidate.thinkingLevelMap?.max === undefined
+    || candidate.thinkingLevelMap.max === null
+    || (candidate.samplingParams !== undefined && (!candidate.samplingParams || typeof candidate.samplingParams !== "object" || Array.isArray(candidate.samplingParams)))
+  ) {
     throw new SolarRoleConfigurationError("invalid_model", "Solar role sessions require registry-confirmed upstage/solar-pro4 with max thinking support.");
   }
 }
@@ -631,6 +661,42 @@ function verifySettings(settings: PiSettingsManager) {
   }
 }
 
+function plannerResponseFormat(responseSchema: Record<string, unknown>) {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "solar_planner_output",
+      strict: true,
+      schema: responseSchema,
+    },
+  };
+}
+
+function bindResponseSchema(model: SolarMaxModel, request: SolarRoleRequest): SolarMaxModel {
+  if (request.responseSchema === undefined) return model;
+  if (request.role !== "planner") throw new SolarRoleConfigurationError("session_policy", "Only Planner sessions may receive a response schema.");
+  if (model.api !== "openai-completions") {
+    throw new SolarRoleConfigurationError("session_policy", "Planner response schemas require the pinned openai-completions model adapter.");
+  }
+  return {
+    ...model,
+    samplingParams: {
+      ...model.samplingParams,
+      response_format: plannerResponseFormat(cloneResponseSchema(request.responseSchema)),
+    },
+  };
+}
+
+function assertPlannerResponseBinding(model: SolarRoleSessionState["model"], request: SolarRoleRequest) {
+  if (request.responseSchema === undefined) return;
+  if (model.api !== "openai-completions") {
+    throw new SolarRoleConfigurationError("session_policy", "Pi did not retain the openai-completions adapter required for the Planner response schema.");
+  }
+  if (!isDeepStrictEqual(model.samplingParams?.response_format, plannerResponseFormat(request.responseSchema))) {
+    throw new SolarRoleConfigurationError("session_policy", "Pi did not retain the requested Planner response schema on the pinned model.");
+  }
+}
+
 function assertFreshSession(session: SolarRoleSession, request: SolarRoleRequest) {
   if (!session || typeof session.prompt !== "function" || typeof session.abort !== "function" || typeof session.dispose !== "function") {
     throw new SolarRoleConfigurationError("session_policy", "Pi returned an invalid Solar role session.");
@@ -644,6 +710,7 @@ function assertFreshSession(session: SolarRoleSession, request: SolarRoleRequest
   if (!Array.isArray(session.state.messages) || session.state.messages.length !== 0) {
     throw new SolarRoleConfigurationError("session_policy", "Pi returned a non-fresh Solar role context.");
   }
+  assertPlannerResponseBinding(session.state.model, request);
   if (session.systemPrompt !== request.systemPrompt && !session.systemPrompt.startsWith(`${request.systemPrompt}\n`)) {
     throw new SolarRoleConfigurationError("session_policy", "Pi did not apply the explicit Solar role system prompt.");
   }
@@ -713,7 +780,8 @@ export function createPiSdkSolarRoleSessionFactory(options: PiSdkSolarRoleFactor
   if (!options || typeof options !== "object" || !options.sdk) throw new SolarRoleConfigurationError("sdk_creation", "Pi SDK bindings are required.");
   assertPlainText(options.cwd, "Solar role cwd", 4096);
   assertPlainText(options.agentDir, "Solar role agentDir", 4096);
-  assertSolarModel(options.solarMaxModel);
+  const solarMaxModel = options.solarMaxModel;
+  assertSolarModel(solarMaxModel);
   const { sdk } = options;
   if (typeof sdk.createAgentSession !== "function" || typeof sdk.DefaultResourceLoader !== "function" || typeof sdk.SessionManager?.inMemory !== "function" || typeof sdk.SettingsManager?.inMemory !== "function") {
     throw new SolarRoleConfigurationError("sdk_creation", "Installed Pi SDK lifecycle bindings are incomplete.");
@@ -726,6 +794,7 @@ export function createPiSdkSolarRoleSessionFactory(options: PiSdkSolarRoleFactor
     let session: SolarRoleSession | undefined;
     try {
       if (request.signal?.aborted) throw new SolarRoleConfigurationError("sdk_creation", "Solar role session creation was cancelled.");
+      const model = bindResponseSchema(solarMaxModel, request);
       const settingsManager = sdk.SettingsManager.inMemory(createInMemorySettings(), { projectTrusted: false });
       const sessionManager = sdk.SessionManager.inMemory(options.cwd);
       if (!settingsManager || typeof settingsManager !== "object" || !sessionManager || typeof sessionManager !== "object" || seenSettingsManagers.has(settingsManager as object) || seenSessionManagers.has(sessionManager as object)) {
@@ -759,9 +828,9 @@ export function createPiSdkSolarRoleSessionFactory(options: PiSdkSolarRoleFactor
       const createOptions: Record<string, unknown> = {
         cwd: options.cwd,
         agentDir: options.agentDir,
-        model: options.solarMaxModel,
+        model,
         thinkingLevel: SOLAR_ROLE_THINKING_LEVEL,
-        scopedModels: [{ model: options.solarMaxModel, thinkingLevel: SOLAR_ROLE_THINKING_LEVEL }],
+        scopedModels: [{ model, thinkingLevel: SOLAR_ROLE_THINKING_LEVEL }],
         noTools: "all",
         tools: [],
         excludeTools: [],
@@ -820,7 +889,7 @@ export function captureVisibleSolarRoleOutput(messages: unknown[]): string {
     if (text) visible.push(text);
   }
   const last = assistants.at(-1)!;
-  if (["pending", "toolUse", "error", "aborted", "deferred"].includes(String(last.stopReason))) {
+  if (last.stopReason !== "stop") {
     throw new AttemptFailure(last.stopReason === "aborted" ? "request_cancelled" : "prompt_failed");
   }
   const output = visible.join("\n");
@@ -1058,6 +1127,7 @@ export function createSolarRoleRunner(options: SolarRoleRunnerOptions): SolarRol
         systemPrompt: input.systemPrompt,
         prompt: input.prompt,
         bundle: input.bundle,
+        ...(input.responseSchema === undefined ? {} : { responseSchema: input.responseSchema }),
         signal: token.controller.signal,
       };
       const creation = Promise.resolve().then(() => {
@@ -1108,6 +1178,11 @@ export function createSolarRoleRunner(options: SolarRoleRunnerOptions): SolarRol
       }
       assertCurrent();
       if (!session.state || session.state.model?.provider !== SOLAR_ROLE_PROVIDER || session.state.model?.id !== SOLAR_ROLE_MODEL_ID || session.state.thinkingLevel !== SOLAR_ROLE_THINKING_LEVEL || !Array.isArray(session.state.tools) || session.state.tools.length !== 0 || (session.getActiveToolNames && session.getActiveToolNames().length !== 0)) {
+        throw new AttemptFailure("policy_violation");
+      }
+      try {
+        assertPlannerResponseBinding(session.state.model, request);
+      } catch {
         throw new AttemptFailure("policy_violation");
       }
       if (session.state.errorMessage) throw new AttemptFailure("prompt_failed");

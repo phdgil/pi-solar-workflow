@@ -82,6 +82,8 @@ Progress is based on material information, not a new ID, receipt, URL, hash, sco
 
 Planner, Approach Reviewer, and Critic attempts receive a controller-selected provenance bundle and `tools:[]`; extension, skill, prompt-template, and context-file discovery are disabled. Each attempt uses a new in-memory Pi session, explicit `solar-pro4`, and `thinkingLevel: "max"`. The Approach Reviewer checks architecture/feasibility for software work or methodology/evidence/document structure for research work. The Critic checks whole-plan scope, risk, verification, and acceptance.
 
+The Planner uses Solar's native JSON Schema output for model-authored sections and the full contract. The host renders Markdown deterministically and binds it to the original response; schema conformity never substitutes for semantic validation or human approval.
+
 One attempt has a 180-second deadline covering session creation and prompting. Defaults are at most **12 SDK session attempts**, **3 repair attempts**, and **3 review revisions**. Repairs consume both an attempt and a repair. These are local controller/session-attempt budgets—not HTTP-request, retry, token, throughput, or provider quotas. Timed-out, cancelled, late, stale, or invalid attempts cannot write artifacts or passing receipts.
 
 Material findings require a full Planner revision, a location-bound resolution record, and fresh reviews by both reviewers. Unresolved, blocked, malformed, or stale reviews cannot advance. A planning-only request still completes the entire parse/review/revision cycle, then stops at `planning_complete` with no approval token, execution tool, or execution follow-up.

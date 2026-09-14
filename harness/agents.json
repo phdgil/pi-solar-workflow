@@ -62,7 +62,7 @@
         "Do not hide missing evidence behind plausible defaults or claim that self-review proves correctness."
       ],
       "input": "A host-selected provenance bundle, original intent and interview closure, current attempt identity, and any current revision findings requiring resolution.",
-      "output": "Only the defined Planner JSON result containing the full planMarkdown and exact finding resolutions; malformed or incomplete contracts are failures.",
+      "output": "Only the defined Planner JSON result containing model-authored status, six section contents, the full contract object, and exact finding resolutions. The host renders and binds the complete Markdown; malformed or incomplete contracts are failures.",
       "tools": "None. The host creates a fresh in-memory Pi session with built-in tools, custom tools, extensions, skills, prompt templates, themes, and context files disabled.",
       "skill": "harness/skills/planner/SKILL.md",
       "collaboration": "The host alone selects provenance, validates and saves the plan, dispatches reviewers, and returns material findings for a full revision. The planner does not contact reviewers or the user directly.",

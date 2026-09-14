@@ -47,6 +47,7 @@ The deterministic evidence set must cover at least:
 4. Current ready goal/token normal closure; stale token, gap, contradiction, or stale review rejection; exact early finish preserving open state; ambiguous text not advancing.
 5. Typed research-only and detour submission without generic write/edit/shell; stale, malformed, missing-lineage, or collision cases not overwriting; gap/answer/source lineage surviving reload.
 6. Fresh Planner, Approach Reviewer, and Critic contexts and current receipts; material/blocked/malformed/stale reviews not advancing; all attempts and repairs counted; same-model correlation displayed.
+   - Native Planner schema reaches the installed SDK/provider without changing Solar Max or enabling tools. Canonical raw-output-to-Markdown/resolution binding rejects forged artifacts, old envelopes, malformed contracts, heading/fence injection and unchanged canonical revisions.
 7. Fully reviewed planning-only completion with no approval or execute path.
 8. The same authority guard protecting model tools and direct host gates; a stop/revision/workflow change during gate A preventing gate B; wrong-step rejection and a valid final rerun.
 9. Artifact path/kind/acceptance/gate rebinding clearing reuse and approval while preserving bytes/history; an identical descriptor table retaining only otherwise eligible checkpoints.

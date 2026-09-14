@@ -10,6 +10,7 @@ import {
   createPiSdkSolarRoleSessionFactory,
   createSolarRoleBudget,
   createSolarRoleRunner,
+  renderSolarRolePrompt,
   requireSolarMaxModel,
   reserveSolarRoleBudget,
   validateRoleContextBundle,
@@ -19,10 +20,46 @@ const MODEL = {
   provider: "upstage",
   id: "solar-pro4",
   name: "Solar Pro 4",
+  api: "openai-completions",
   reasoning: true,
   thinkingLevelMap: { max: "max" },
+  samplingParams: { temperature: 0.2, top_p: 0.9 },
 };
 const SYSTEM_PROMPT = "Act as an isolated planning role.";
+
+function plannerSchema() {
+  return {
+    type: "object",
+    properties: {
+      status: { type: "string", enum: ["ready"] },
+      sections: {
+        type: "object",
+        properties: { goalAndScope: { type: "string", minLength: 1 } },
+        required: ["goalAndScope"],
+        additionalProperties: false,
+      },
+    },
+    required: ["status", "sections"],
+    additionalProperties: false,
+  };
+}
+
+function modelWithResponseSchema(responseSchema) {
+  return {
+    ...MODEL,
+    samplingParams: {
+      ...MODEL.samplingParams,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "solar_planner_output",
+          strict: true,
+          schema: structuredClone(responseSchema),
+        },
+      },
+    },
+  };
+}
 
 function hash(text) {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -302,11 +339,36 @@ test("mandatory provenance is never silently clipped or bypassed through exclude
   assert.throws(() => validateRoleContextBundle(tampered), /byte count/);
 });
 
-test("the injected Pi SDK factory pins empty tools, disabled discovery, in-memory settings, Solar Pro4 Max, and distinct managers", async () => {
+test("role prompts omit the obsolete nested-fence Planner transport reminder", () => {
+  const bundle = baseBundle();
+  const plannerPrompt = renderSolarRolePrompt({
+    ...baseInput({ bundle, responseSchema: plannerSchema() }),
+    contextId: "context-planner",
+  });
+
+  assert.ok(plannerPrompt.includes("</solar-provenance-bundle>"));
+  assert.equal(plannerPrompt.includes("Planner transport check:"), false);
+  assert.equal(plannerPrompt.includes("planMarkdown"), false);
+  assert.equal(plannerPrompt.includes("```json"), false);
+  assert.equal(plannerPrompt.includes("responseSchema"), false);
+  assert.match(plannerPrompt, /Return only the requested JSON object\. Insufficient evidence is a limitation, never permission to invent support or passing results\.$/);
+  assert.equal(plannerPrompt.includes("Every contract step"), false);
+  assert.equal(plannerPrompt.includes("unsupported by provenance"), false);
+
+  const criticPrompt = renderSolarRolePrompt({
+    ...baseInput({ bundle, role: "critic" }),
+    contextId: "context-critic",
+  });
+  assert.equal(criticPrompt.includes("Planner transport check:"), false);
+});
+
+test("the Pi SDK factory preserves schema across compatible rebinding and rejects wrong adapters without weakening isolated Solar Pro4 Max policy", async () => {
   const settingsCalls = [];
   const sessionManagers = [];
   const loaders = [];
   const createCalls = [];
+  const createdSessions = [];
+  let rebindModel;
   class FakeLoader {
     constructor(options) {
       this.options = options;
@@ -347,11 +409,18 @@ test("the injected Pi SDK factory pins empty tools, disabled discovery, in-memor
     DefaultResourceLoader: FakeLoader,
     async createAgentSession(options) {
       createCalls.push(options);
+      let sessionModel = options.model;
+      if (rebindModel === "schema-preserved") sessionModel = structuredClone(options.model);
+      else if (rebindModel === "schema-lost") sessionModel = MODEL;
+      else if (rebindModel === "wrong-adapter") sessionModel = { ...structuredClone(options.model), api: "anthropic-messages" };
+      else if (rebindModel === "missing-adapter") sessionModel = Object.fromEntries(Object.entries(structuredClone(options.model)).filter(([key]) => key !== "api"));
       const made = fakeSession({
+        state: { model: sessionModel },
         sessionManager: options.sessionManager,
         settingsManager: options.settingsManager,
         systemPrompt: `${options.resourceLoader.options.systemPrompt}\nCurrent working directory: ${options.cwd}`,
       });
+      createdSessions.push(made);
       return { session: made.session };
     },
   };
@@ -370,26 +439,51 @@ test("the injected Pi SDK factory pins empty tools, disabled discovery, in-memor
     solarMaxModel: model,
   });
   const bundle = baseBundle();
+  const responseSchema = plannerSchema();
+  const originalSchema = structuredClone(responseSchema);
+  const originalModel = structuredClone(MODEL);
   const request = {
-    ...baseInput({ bundle }),
+    ...baseInput({ bundle, responseSchema }),
     contextId: "context-one",
   };
+  const originalRequest = structuredClone(request);
   const first = await factory(request);
   const second = await factory({ ...request, contextId: "context-two" });
+  const reviewer = await factory({ ...request, contextId: "context-three", role: "critic", responseSchema: undefined });
 
   assert.deepEqual(registryCalls, [["upstage", "solar-pro4"]]);
-  assert.equal(createCalls.length, 2);
+  assert.equal(createCalls.length, 3);
   assert.notEqual(settingsCalls[0], settingsCalls[1]);
   assert.notEqual(sessionManagers[0], sessionManagers[1]);
   assert.notEqual(first, second);
+  assert.notEqual(createCalls[0].model, MODEL);
+  assert.notEqual(createCalls[1].model, MODEL);
+  assert.notEqual(createCalls[0].model, createCalls[1].model);
+  for (const call of createCalls.slice(0, 2)) {
+    assert.deepEqual(call.model, modelWithResponseSchema(responseSchema));
+    assert.notEqual(call.model.samplingParams, MODEL.samplingParams);
+    assert.notEqual(call.model.samplingParams.response_format.json_schema.schema, responseSchema);
+    assert.notEqual(call.model.samplingParams.response_format.json_schema.schema.properties, responseSchema.properties);
+    assert.deepEqual(call.scopedModels, [{ model: call.model, thinkingLevel: "max" }]);
+    assert.equal(call.scopedModels[0].model, call.model);
+  }
+  assert.notEqual(
+    createCalls[0].model.samplingParams.response_format.json_schema.schema,
+    createCalls[1].model.samplingParams.response_format.json_schema.schema,
+  );
+  assert.equal(createCalls[2].model, MODEL);
+  assert.deepEqual(createCalls[2].scopedModels, [{ model: MODEL, thinkingLevel: "max" }]);
+  assert.equal(createCalls[2].scopedModels[0].model, MODEL);
+  assert.equal(createCalls[2].model.samplingParams.response_format, undefined);
+  assert.deepEqual(request, originalRequest);
+  assert.deepEqual(responseSchema, originalSchema);
+  assert.deepEqual(MODEL, originalModel);
   for (let index = 0; index < createCalls.length; index += 1) {
     const call = createCalls[index];
-    assert.equal(call.model, MODEL);
     assert.equal(call.thinkingLevel, "max");
     assert.deepEqual(call.tools, []);
     assert.deepEqual(call.customTools, []);
     assert.equal(call.noTools, "all");
-    assert.deepEqual(call.scopedModels, [{ model: MODEL, thinkingLevel: "max" }]);
     assert.equal(call.sessionManager, sessionManagers[index]);
     assert.equal(call.settingsManager, settingsCalls[index]);
     assert.equal(loaders[index].reloads, 1);
@@ -414,6 +508,60 @@ test("the injected Pi SDK factory pins empty tools, disabled discovery, in-memor
   }
   first.dispose();
   second.dispose();
+  reviewer.dispose();
+
+  await assert.rejects(
+    factory({ ...request, contextId: "context-reviewer-schema", role: "critic" }),
+    /Only Planner sessions may receive a response schema/,
+  );
+  assert.equal(createCalls.length, 3);
+
+  rebindModel = "schema-preserved";
+  const rebound = await factory({ ...request, contextId: "context-rebound-preserved" });
+  assert.notEqual(rebound.state.model, createCalls.at(-1).model);
+  assert.deepEqual(rebound.state.model, createCalls.at(-1).model);
+  rebound.dispose();
+
+  rebindModel = "schema-lost";
+  await assert.rejects(
+    factory({ ...request, contextId: "context-rebound-schema-lost" }),
+    /did not retain the requested Planner response schema/,
+  );
+  assert.equal(createdSessions.at(-1).stats.abortCalls, 1);
+  assert.equal(createdSessions.at(-1).stats.disposeCalls, 1);
+
+  for (const adapterState of ["wrong-adapter", "missing-adapter"]) {
+    rebindModel = adapterState;
+    await assert.rejects(
+      factory({ ...request, contextId: `context-rebound-${adapterState}` }),
+      /did not retain the openai-completions adapter/,
+    );
+    assert.equal(createdSessions.at(-1).stats.abortCalls, 1);
+    assert.equal(createdSessions.at(-1).stats.disposeCalls, 1);
+  }
+
+  const createCountBeforeWrongAdapter = createCalls.length;
+  const settingsCountBeforeWrongAdapter = settingsCalls.length;
+  for (const incompatibleModel of [
+    { ...MODEL, api: "anthropic-messages" },
+    Object.fromEntries(Object.entries(MODEL).filter(([key]) => key !== "api")),
+  ]) {
+    const incompatibleFactory = createPiSdkSolarRoleSessionFactory({
+      sdk,
+      cwd: "C:/workspace",
+      agentDir: "C:/pi-home/agent",
+      solarMaxModel: incompatibleModel,
+    });
+    await assert.rejects(
+      incompatibleFactory({ ...request, contextId: `context-incompatible-${createCalls.length}` }),
+      /require the pinned openai-completions model adapter/,
+    );
+  }
+  assert.equal(createCalls.length, createCountBeforeWrongAdapter);
+  assert.equal(settingsCalls.length, settingsCountBeforeWrongAdapter);
+  assert.deepEqual(request, originalRequest);
+  assert.deepEqual(responseSchema, originalSchema);
+  assert.deepEqual(MODEL, originalModel);
 
   assert.throws(() => createPiSdkSolarRoleSessionFactory({
     sdk,
@@ -427,18 +575,22 @@ test("successful attempts commit only visible output behind a final identity che
   const sessions = [];
   const requests = [];
   const diagnostics = [];
+  const responseSchema = plannerSchema();
+  const originalSchema = structuredClone(responseSchema);
   const runner = createSolarRoleRunner({
     idFactory: incrementalIds(),
     diagnostic: value => diagnostics.push(value),
     async sessionFactory(request) {
       requests.push(request);
-      const made = fakeSession();
+      const made = fakeSession({
+        state: { model: request.responseSchema === undefined ? MODEL : modelWithResponseSchema(request.responseSchema) },
+      });
       sessions.push(made);
       return made.session;
     },
   });
   const boundary = fakeBoundary();
-  const first = await runner.run(baseInput(), boundary);
+  const first = await runner.run(baseInput({ responseSchema }), boundary);
   const second = await runner.run(baseInput({ role: "critic", planRevision: hash("plan-revision-2") }), boundary);
 
   assert.equal(first.output, "visible result");
@@ -463,6 +615,11 @@ test("successful attempts commit only visible output behind a final identity che
   assert.equal(boundary.events.at(-2)[0], "current");
   assert.equal(requests[0].contextId, "context-1");
   assert.equal(requests[0].signal instanceof AbortSignal, true);
+  assert.deepEqual(requests[0].responseSchema, responseSchema);
+  assert.notEqual(requests[0].responseSchema, responseSchema);
+  assert.notEqual(requests[0].responseSchema.properties, responseSchema.properties);
+  assert.equal(requests[1].responseSchema, undefined);
+  assert.deepEqual(responseSchema, originalSchema);
   assert.match(sessions[0].stats.prompts[0].text, /solar-role-metadata/);
   assert.match(sessions[0].stats.prompts[0].text, new RegExp(first.receipt.bundleRevision));
   assert.deepEqual(sessions[0].stats.prompts[0].options, { expandPromptTemplates: false, source: "extension" });
@@ -470,6 +627,55 @@ test("successful attempts commit only visible output behind a final identity che
   assert.deepEqual(sessions.map(item => item.stats.abortCalls), [0, 0]);
   assert.equal(diagnostics.filter(item => item.code === "completed").length, 2);
   assert.equal(JSON.stringify(diagnostics).includes("hidden chain of thought"), false);
+});
+
+test("schema-bound attempts reject adapter rebinding after session creation", async () => {
+  const responseSchema = plannerSchema();
+  const made = fakeSession({
+    state: { model: modelWithResponseSchema(responseSchema) },
+    async prompt(session) {
+      session.state.model = { ...session.state.model, api: "anthropic-messages" };
+      session.state.messages.push(assistant('{"status":"ready"}'));
+    },
+  });
+  const runner = createSolarRoleRunner({
+    idFactory: incrementalIds(),
+    diagnostic() {},
+    async sessionFactory() { return made.session; },
+  });
+  const boundary = fakeBoundary();
+
+  await assert.rejects(
+    runner.run(baseInput({ responseSchema }), boundary),
+    error => error.code === "policy_violation",
+  );
+  assert.equal(boundary.commits.length, 0);
+  assert.equal(terminalAttempt(boundary).terminalReason, "policy_violation");
+  assert.equal(made.stats.abortCalls, 1);
+  assert.equal(made.stats.disposeCalls, 1);
+});
+
+test("truncated or unrecognized completion states cannot produce role receipts", async () => {
+  for (const stopReason of ["length", undefined, "unexpected-terminal-state"]) {
+    const diagnostics = [];
+    const made = fakeSession({
+      async prompt(session) {
+        session.state.messages.push(assistant('{"status":"ready","sections":{},"contract":{},"resolutions":[]}', { stopReason }));
+      },
+    });
+    const runner = createSolarRoleRunner({
+      idFactory: incrementalIds(),
+      diagnostic(value) { diagnostics.push(value); },
+      async sessionFactory() { return made.session; },
+    });
+    const boundary = fakeBoundary();
+    await assert.rejects(runner.run(baseInput(), boundary), error => error.code === "prompt_failed");
+    assert.equal(boundary.commits.length, 0);
+    assert.equal(terminalAttempt(boundary).status, "failed");
+    assert.equal(diagnostics.some(value => value.code === "completed"), false);
+    assert.ok(diagnostics.length > 0);
+    assert.equal(made.stats.disposeCalls, 1);
+  }
 });
 
 test("digit-leading canonical workflow UUIDs are valid role identities", async () => {

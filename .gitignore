@@ -23,6 +23,7 @@
 !/runtime/retry-fetch.ts
 !/runtime/workflow.ts
 !/runtime/loop.ts
+!/runtime/planner-output.ts
 !/runtime/roles.ts
 !/runtime/harness.ts
 !/runtime/web-research.ts
