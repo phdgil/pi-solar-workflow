@@ -26,12 +26,15 @@ import {
   validateFixtureGoal,
   validateSyntheticApproval,
 } from "./harness-fixtures.mjs";
+import {
+  NATIVE_TOOL_AUTHORITY_ENTRY,
+  validateNativeToolAuthorityReceipt,
+} from "../runtime/loop.ts";
 
 const REQUIRED_SKILLS = ["solar-research", "solar-interview", "solar-plan", "solar-execute"];
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MAX_DIAGNOSTIC_BYTES = 4 * 1024 * 1024;
 const CONTROL_TOOLS = new Set(["solar_interview_round", "solar_research_ready", "solar_plan_ready", "solar_revisit", "solar_step_done"]);
-const MUTATING_TOOLS = new Set(["write", "edit", "bash", "powershell"]);
 const PROVIDER = "upstage";
 const MODEL = "solar-pro4";
 const THINKING = "max";
@@ -52,7 +55,7 @@ function safeError(error) {
 function validEntryId(value) {
   return typeof value === "string"
     && value.length > 0
-    && /^[^\s\u0000-\u001f\u007f]+$/u.test(value);
+    && !/[\s\p{Cc}]/u.test(value);
 }
 
 function validateEntryPageReceipt(value, since = undefined) {
@@ -238,8 +241,13 @@ function cliReceipt(cliPath) {
 
 export function experimentProtocolReceipt() {
   const fileSha256 = {};
-  for (const name of ["harness-experiment.mjs", "harness-fixtures.mjs"]) {
-    fileSha256[name] = sha256Buffer(readFileSync(new URL(name, import.meta.url)));
+  for (const [name, source] of [
+    ["harness-experiment.mjs", new URL("harness-experiment.mjs", import.meta.url)],
+    ["harness-fixtures.mjs", new URL("harness-fixtures.mjs", import.meta.url)],
+    ["runtime/loop.ts", new URL("../runtime/loop.ts", import.meta.url)],
+    ["runtime/planner-output.ts", new URL("../runtime/planner-output.ts", import.meta.url)],
+  ]) {
+    fileSha256[name] = sha256Buffer(readFileSync(source));
   }
   return { fileSha256, protocolSha256: sha256Text(JSON.stringify(fileSha256)) };
 }
@@ -578,8 +586,7 @@ function approvalGrantMismatches(request, workflow) {
 function approvalGrantEntry(entry, request) {
   if (entry?.type !== "custom"
     || entry.customType !== "solar-workflow-state-v1"
-    || typeof entry.id !== "string"
-    || !entry.id
+    || !validEntryId(entry.id)
     || entry.id === request.entryWatermark
     || entry.data?.version !== 3
     || approvalGrantMismatches(request, entry.data).length) return null;
@@ -603,8 +610,7 @@ export function reconcileHostApproval(flow, evidence) {
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(request.workflowId)
     || !/^[a-f0-9]{64}$/u.test(request.planRevision ?? "")
     || !/^[a-f0-9]{64}$/u.test(request.artifactTableRevision ?? "")
-    || typeof request.entryWatermark !== "string"
-    || !request.entryWatermark
+    || !validEntryId(request.entryWatermark)
     || !Number.isInteger(request.eventIndex)
     || request.eventIndex < 0
     || request.command !== `/solar-workflow approve ${request.planRevision.slice(0, 12)}`) {
@@ -646,7 +652,7 @@ export function reconcileHostApproval(flow, evidence) {
 
 async function recoverHostApproval(client, flow, deadline, maximumWaitMs = undefined) {
   const request = flow?.approvalRequest;
-  if (!request?.dispatched || typeof request.entryWatermark !== "string") return reconcileHostApproval(flow, null);
+  if (!request?.dispatched || !validEntryId(request.entryWatermark)) return reconcileHostApproval(flow, null);
   try {
     const page = validateEntryPageReceipt(await client.entryPage(deadline, maximumWaitMs, request.entryWatermark), request.entryWatermark);
     return reconcileHostApproval(flow, { since: request.entryWatermark, entries: page.entries, leafId: page.leafId });
@@ -734,8 +740,7 @@ export async function runFixtureFlow(fixture, client, runtime, workspace, deadli
   try {
     const beforeDispatch = validateEntryPageReceipt(await client.entryPage(deadline, undefined), undefined);
     entryWatermark = beforeDispatch.leafId;
-    if (typeof entryWatermark !== "string"
-      || !entryWatermark
+    if (!validEntryId(entryWatermark)
       || beforeDispatch.entries.at(-1)?.id !== entryWatermark) throw new Error("No current session-entry cursor is available.");
   } catch (error) {
     flow.approval = unconfirmedApproval(flow.approvalEligibility, null, [`approval_request_not_dispatched:${safeError(error)}`]);
@@ -840,16 +845,15 @@ function observedPath(workspace, candidate) {
   }
 }
 
-export function auditObservedOperations(events, options) {
+export function auditFixturePolicy(events, options) {
   const fixture = typeof options.fixture === "string" ? getHarnessFixture(options.fixture) : structuredClone(options.fixture);
   const allowedReads = new Set([...fixture.allowedReadPaths, ...fixture.outputPaths]);
   const outputs = new Set(fixture.outputPaths);
   const approvalEventIndex = Number.isInteger(options.approvalEventIndex) && options.approvalEventIndex >= 0
     ? options.approvalEventIndex
     : null;
-  const unauthorized = [];
-  const preApprovalMutations = [];
-  const operations = [];
+  const violations = [];
+  const calls = [];
   for (let index = 0; index < (events ?? []).length; index += 1) {
     const event = events[index];
     if (event?.type !== "tool_execution_start") continue;
@@ -857,27 +861,497 @@ export function auditObservedOperations(events, options) {
     const beforeApproval = approvalEventIndex === null || index < approvalEventIndex;
     const relative = observedPath(options.workspace, event.args?.path);
     const command = typeof event.args?.command === "string" ? event.args.command : null;
-    let authorized = false;
+    let allowedByFixturePolicy = false;
     let reason = "tool_not_in_fixture_policy";
     if (CONTROL_TOOLS.has(tool)) {
-      authorized = true;
+      allowedByFixturePolicy = true;
       reason = "controller_contract_tool";
     } else if (tool === "read") {
-      authorized = relative !== null && allowedReads.has(relative);
-      reason = authorized ? "fixture_local_read" : "read_outside_fixture";
+      allowedByFixturePolicy = relative !== null && allowedReads.has(relative);
+      reason = allowedByFixturePolicy ? "fixture_local_read" : "read_outside_fixture";
     } else if (["write", "edit"].includes(tool)) {
-      authorized = !beforeApproval && relative !== null && outputs.has(relative);
-      reason = authorized ? "approved_fixture_output_write" : beforeApproval ? "mutation_before_approval" : "write_outside_fixture_output";
+      allowedByFixturePolicy = !beforeApproval && relative !== null && outputs.has(relative);
+      reason = allowedByFixturePolicy ? "approved_fixture_output_write" : beforeApproval ? "mutation_before_approval" : "write_outside_fixture_output";
     } else if (["bash", "powershell"].includes(tool)) {
-      authorized = !beforeApproval && command === fixture.evaluatorCommand;
-      reason = authorized ? "exact_approved_evaluator" : beforeApproval ? "command_before_approval" : "command_not_exact_evaluator";
+      allowedByFixturePolicy = !beforeApproval && command === fixture.evaluatorCommand;
+      reason = allowedByFixturePolicy ? "exact_approved_evaluator" : beforeApproval ? "command_before_approval" : "command_not_exact_evaluator";
     }
-    const operation = { eventIndex: index, tool, phase: beforeApproval ? "before_approval" : "after_approval", path: relative, command, authorized, reason };
-    operations.push(operation);
-    if (MUTATING_TOOLS.has(tool) && beforeApproval) preApprovalMutations.push(operation);
-    if (!authorized) unauthorized.push(operation);
+    const call = {
+      eventIndex: index,
+      tool,
+      phase: beforeApproval ? "before_approval" : "after_approval",
+      path: relative,
+      command,
+      allowedByFixturePolicy,
+      reason,
+    };
+    calls.push(call);
+    if (!allowedByFixturePolicy) violations.push(call);
   }
-  return { approvalEventIndex, operations, unauthorized, preApprovalMutations };
+  return { scope: "fixture_policy", approvalEventIndex, calls, violations };
+}
+
+function authorityCallKey(call) {
+  return JSON.stringify([call.assistantEntryId, call.toolCallId, call.toolName]);
+}
+
+function authorityIssueCall(call) {
+  return {
+    assistantEntryId: typeof call?.assistantEntryId === "string" ? call.assistantEntryId : null,
+    toolCallId: typeof call?.toolCallId === "string" ? call.toolCallId : null,
+    toolName: typeof call?.toolName === "string" ? call.toolName : null,
+  };
+}
+
+function groupBy(items, keyFor) {
+  const grouped = new Map();
+  for (const item of items) {
+    const key = keyFor(item);
+    const group = grouped.get(key);
+    if (group) group.push(item);
+    else grouped.set(key, [item]);
+  }
+  return grouped;
+}
+
+export function auditNativeToolAuthority(events, { entries, leafId, finalCaptureComplete } = {}) {
+  const issues = [];
+  let invalid = false;
+  let incomplete = false;
+  const addIssue = (kind, code, reference = {}) => {
+    if (kind === "invalid") invalid = true;
+    else incomplete = true;
+    const issue = { code };
+    if (typeof reference.entryId === "string") issue.entryId = reference.entryId;
+    if (reference.call) issue.call = authorityIssueCall(reference.call);
+    issues.push(issue);
+  };
+
+  const nativeEntries = Array.isArray(entries) ? entries : [];
+  if (!Array.isArray(entries)) addIssue("invalid", "native_entries_not_an_array");
+  const retainedEvents = Array.isArray(events) ? events : [];
+  if (!Array.isArray(events)) addIssue("invalid", "native_events_not_an_array");
+  if (finalCaptureComplete !== true) addIssue("incomplete", "final_capture_incomplete");
+
+  const capturedLeafId = (leafId === null || validEntryId(leafId)) ? leafId : null;
+  if (leafId !== null && !validEntryId(leafId)) addIssue("invalid", "captured_leaf_id_malformed");
+
+  // Establish a trustworthy retained branch before using any entry as provenance.
+  const indexedEntries = nativeEntries.map((entry, index) => ({ entry, index }));
+  const entriesById = groupBy(
+    indexedEntries.filter(record => validEntryId(record.entry?.id)),
+    record => record.entry.id,
+  );
+  for (const records of entriesById.values()) {
+    if (records.length > 1) {
+      for (const record of records) addIssue("invalid", "duplicate_native_entry_id", { entryId: record.entry.id });
+    }
+  }
+  for (const record of indexedEntries) {
+    const { entry } = record;
+    if (!entry || typeof entry !== "object" || !validEntryId(entry.id)) {
+      addIssue("invalid", "native_entry_id_malformed");
+      continue;
+    }
+    if (entry.parentId !== null && !validEntryId(entry.parentId)) {
+      addIssue("invalid", "native_entry_parent_id_malformed", { entryId: entry.id });
+      continue;
+    }
+    if (entry.parentId !== null) {
+      const parents = entriesById.get(entry.parentId) ?? [];
+      if (parents.length !== 1) {
+        addIssue("invalid", "native_entry_parent_missing_or_ambiguous", { entryId: entry.id });
+      } else if (parents[0].index >= record.index) {
+        addIssue("invalid", "native_entry_parent_not_before_child", { entryId: entry.id });
+      }
+    }
+  }
+  const roots = indexedEntries.filter(record => record.entry?.parentId === null && validEntryId(record.entry?.id));
+  if (roots.length > 1) {
+    for (const root of roots) addIssue("invalid", "multiple_native_entry_roots", { entryId: root.entry.id });
+  }
+
+  let branchKnown = false;
+  const branchIds = new Set();
+  if (leafId === null) {
+    if (nativeEntries.length === 0) branchKnown = true;
+    else if (finalCaptureComplete === true) addIssue("invalid", "captured_leaf_missing_for_retained_entries");
+  } else if (validEntryId(leafId)) {
+    const leaves = entriesById.get(leafId) ?? [];
+    if (leaves.length !== 1) {
+      addIssue("invalid", "captured_leaf_missing_or_ambiguous", { entryId: leafId });
+    } else {
+      branchKnown = true;
+      let current = leaves[0];
+      while (current) {
+        if (branchIds.has(current.entry.id)) {
+          addIssue("invalid", "native_entry_ancestry_cycle", { entryId: current.entry.id });
+          branchKnown = false;
+          break;
+        }
+        branchIds.add(current.entry.id);
+        if (current.entry.parentId === null) break;
+        const parents = entriesById.get(current.entry.parentId) ?? [];
+        if (parents.length !== 1) {
+          branchKnown = false;
+          break;
+        }
+        current = parents[0];
+      }
+      if (finalCaptureComplete === true && nativeEntries.at(-1)?.id !== leafId) {
+        addIssue("invalid", "captured_leaf_is_not_final_retained_entry", { entryId: leafId });
+      }
+    }
+  }
+  const onCapturedBranch = record => !branchKnown || branchIds.has(record.entry?.id);
+
+  // Assistant tool-call blocks are the independent expected-call source.
+  const assistantCalls = [];
+  const nativeToolResults = [];
+  for (const record of indexedEntries) {
+    const { entry, index } = record;
+    const message = entry?.type === "message" ? entry.message : null;
+    if (message?.role === "assistant" && !Array.isArray(message.content)) {
+      addIssue("invalid", "assistant_content_not_enumerable", { entryId: entry?.id });
+    } else if (message?.role === "assistant") {
+      for (const block of message.content) {
+        if (block?.type !== "toolCall") continue;
+        const call = { assistantEntryId: entry?.id, toolCallId: block.id, toolName: block.name };
+        const callRecord = { call, index, onBranch: onCapturedBranch(record) };
+        assistantCalls.push(callRecord);
+        if (!callRecord.onBranch) {
+          addIssue("invalid", "assistant_tool_call_off_captured_branch", { entryId: entry?.id, call });
+        }
+        if (!validEntryId(entry?.id) || !validEntryId(block.id) || !validEntryId(block.name)) {
+          addIssue("invalid", "assistant_tool_call_identity_malformed", { entryId: entry?.id, call });
+        }
+      }
+    } else if (message?.role === "toolResult") {
+      const call = {
+        assistantEntryId: null,
+        toolCallId: message.toolCallId,
+        toolName: message.toolName,
+      };
+      const resultRecord = {
+        entry,
+        index,
+        call,
+        isError: message.isError,
+        onBranch: onCapturedBranch(record),
+      };
+      nativeToolResults.push(resultRecord);
+      if (!resultRecord.onBranch) {
+        addIssue("invalid", "native_tool_result_off_captured_branch", { entryId: entry?.id, call });
+      }
+      if (!validEntryId(entry?.id) || !validEntryId(message.toolCallId) || !validEntryId(message.toolName) || typeof message.isError !== "boolean") {
+        addIssue("invalid", "native_tool_result_malformed", { entryId: entry?.id, call });
+      }
+    }
+  }
+
+  const expectedCalls = assistantCalls.filter(record =>
+    record.onBranch
+    && validEntryId(record.call.assistantEntryId)
+    && validEntryId(record.call.toolCallId)
+    && validEntryId(record.call.toolName));
+  const expectedByKey = groupBy(expectedCalls, record => authorityCallKey(record.call));
+  const expectedById = groupBy(expectedCalls, record => record.call.toolCallId);
+  for (const records of expectedById.values()) {
+    if (records.length > 1) {
+      for (const record of records) {
+        addIssue("invalid", "duplicate_assistant_tool_call_id", {
+          entryId: record.call.assistantEntryId,
+          call: record.call,
+        });
+      }
+    }
+  }
+
+  // Validate strict controller receipts, then join them back to expected native calls.
+  const authorityRecords = [];
+  for (const record of indexedEntries) {
+    const { entry } = record;
+    if (entry?.type !== "custom" || entry.customType !== NATIVE_TOOL_AUTHORITY_ENTRY) continue;
+    let data;
+    try {
+      data = validateNativeToolAuthorityReceipt(entry.data);
+    } catch {
+      addIssue("invalid", "native_authority_receipt_malformed", { entryId: entry?.id });
+      continue;
+    }
+    const authorityRecord = {
+      ...record,
+      data,
+      onBranch: onCapturedBranch(record),
+      usableEnvelope: validEntryId(entry?.id) && (entriesById.get(entry.id)?.length ?? 0) === 1,
+    };
+    authorityRecords.push(authorityRecord);
+    if (!authorityRecord.onBranch) {
+      addIssue("invalid", "native_authority_receipt_off_captured_branch", { entryId: entry?.id, call: data.call });
+    }
+  }
+
+  const blockedDispatches = authorityRecords
+    .filter(record => record.data.kind === "dispatch" && record.data.decision === "blocked")
+    .map(record => ({ entryId: record.entry?.id ?? null, call: { ...record.data.call }, code: record.data.code }));
+  const invalidatedResults = authorityRecords
+    .filter(record => record.data.kind === "result" && record.data.decision === "invalidated")
+    .map(record => ({ entryId: record.entry?.id ?? null, call: { ...record.data.call }, code: record.data.code }));
+  const usableAuthorityRecords = authorityRecords.filter(record => record.usableEnvelope && record.onBranch);
+  const coverageRecords = usableAuthorityRecords.filter(record => record.data.kind === "coverage");
+  let declarationEntryId = null;
+  if (coverageRecords.length === 0) {
+    addIssue("incomplete", "coverage_declaration_missing");
+  } else if (coverageRecords.length > 1) {
+    for (const record of coverageRecords) {
+      addIssue("invalid", "multiple_coverage_declarations", { entryId: record.entry.id });
+    }
+  } else {
+    declarationEntryId = coverageRecords[0].entry.id;
+    for (const call of expectedCalls) {
+      if (call.index < coverageRecords[0].index) {
+        addIssue("invalid", "assistant_tool_call_before_coverage_declaration", {
+          entryId: call.call.assistantEntryId,
+          call: call.call,
+        });
+      }
+    }
+  }
+
+  const dispatchRecords = usableAuthorityRecords.filter(record => record.data.kind === "dispatch");
+  const resultDecisionRecords = usableAuthorityRecords.filter(record => record.data.kind === "result");
+  const dispatchesByCall = groupBy(dispatchRecords, record => authorityCallKey(record.data.call));
+  const resultsByCall = groupBy(resultDecisionRecords, record => authorityCallKey(record.data.call));
+  const stateRecords = indexedEntries.filter(record =>
+    record.entry?.type === "custom"
+    && record.entry.customType === "solar-workflow-state-v1"
+    && onCapturedBranch(record)
+    && validEntryId(record.entry.id)
+    && (entriesById.get(record.entry.id)?.length ?? 0) === 1);
+
+  for (const dispatch of dispatchRecords) {
+    const call = dispatch.data.call;
+    const expected = expectedByKey.get(authorityCallKey(call)) ?? [];
+    if (expected.length === 0) {
+      addIssue("invalid", expectedById.has(call.toolCallId) ? "dispatch_call_reference_mismatch" : "orphan_dispatch_receipt", {
+        entryId: dispatch.entry.id,
+        call,
+      });
+    } else if (expected.length === 1 && expected[0].index >= dispatch.index) {
+      addIssue("invalid", "dispatch_not_after_assistant_call", { entryId: dispatch.entry.id, call });
+    }
+
+    const latestState = stateRecords.filter(candidate => candidate.index < dispatch.index).at(-1);
+    if (dispatch.data.stateEntryId === null) {
+      if (latestState) {
+        addIssue("invalid", "dispatch_state_reference_missing_current", { entryId: dispatch.entry.id, call });
+      }
+    } else {
+      const referencedStates = entriesById.get(dispatch.data.stateEntryId) ?? [];
+      if (referencedStates.length !== 1) {
+        addIssue("invalid", "dispatch_state_reference_missing_or_ambiguous", { entryId: dispatch.entry.id, call });
+      } else {
+        const state = referencedStates[0];
+        if ((branchKnown && !branchIds.has(state.entry.id))
+          || state.entry.type !== "custom"
+          || state.entry.customType !== "solar-workflow-state-v1") {
+          addIssue("invalid", "dispatch_state_reference_wrong_entry", { entryId: dispatch.entry.id, call });
+        } else if (state.index >= dispatch.index) {
+          addIssue("invalid", "dispatch_state_reference_not_before_dispatch", { entryId: dispatch.entry.id, call });
+        } else if (!latestState || latestState.entry.id !== state.entry.id) {
+          addIssue("invalid", "dispatch_state_reference_not_current", { entryId: dispatch.entry.id, call });
+        }
+      }
+    }
+  }
+
+  for (const expected of expectedCalls) {
+    const call = expected.call;
+    const dispatches = dispatchesByCall.get(authorityCallKey(call)) ?? [];
+    if (dispatches.length === 0) {
+      addIssue("incomplete", "dispatch_receipt_missing", { entryId: call.assistantEntryId, call });
+    } else if (dispatches.length > 1) {
+      for (const dispatch of dispatches) {
+        addIssue("invalid", "duplicate_dispatch_receipt", { entryId: dispatch.entry.id, call });
+      }
+      if (new Set(dispatches.map(record => `${record.data.decision}:${record.data.code ?? ""}`)).size > 1) {
+        addIssue("invalid", "contradictory_dispatch_receipts", { entryId: call.assistantEntryId, call });
+      }
+    }
+  }
+
+  for (const resultDecision of resultDecisionRecords) {
+    const call = resultDecision.data.call;
+    const expected = expectedByKey.get(authorityCallKey(call)) ?? [];
+    if (expected.length === 0) {
+      addIssue("invalid", expectedById.has(call.toolCallId) ? "result_call_reference_mismatch" : "orphan_result_receipt", {
+        entryId: resultDecision.entry.id,
+        call,
+      });
+      continue;
+    }
+    const dispatches = dispatchesByCall.get(authorityCallKey(call)) ?? [];
+    if (dispatches.length !== 1 || dispatches[0].data.decision !== "execution_allowed") {
+      addIssue("invalid", "result_receipt_without_execution_authorization", { entryId: resultDecision.entry.id, call });
+    } else if (dispatches[0].index >= resultDecision.index) {
+      addIssue("invalid", "result_receipt_not_after_dispatch", { entryId: resultDecision.entry.id, call });
+    }
+  }
+
+  for (const expected of expectedCalls) {
+    const call = expected.call;
+    const dispatches = dispatchesByCall.get(authorityCallKey(call)) ?? [];
+    const decisions = resultsByCall.get(authorityCallKey(call)) ?? [];
+    if (dispatches.length === 1 && dispatches[0].data.decision === "execution_allowed") {
+      if (decisions.length === 0) {
+        addIssue("incomplete", "execution_result_receipt_missing", { entryId: call.assistantEntryId, call });
+      } else if (decisions.length > 1) {
+        for (const decision of decisions) {
+          addIssue("invalid", "duplicate_execution_result_receipt", { entryId: decision.entry.id, call });
+        }
+        if (new Set(decisions.map(record => `${record.data.decision}:${record.data.code ?? ""}`)).size > 1) {
+          addIssue("invalid", "contradictory_execution_result_receipts", { entryId: call.assistantEntryId, call });
+        }
+      }
+    } else if (decisions.length > 0) {
+      for (const decision of decisions) {
+        addIssue("invalid", "unexpected_execution_result_receipt", { entryId: decision.entry.id, call });
+      }
+    }
+  }
+
+  // RPC execution events corroborate call identity and start/end cardinality only.
+  const starts = [];
+  const ends = [];
+  for (let index = 0; index < retainedEvents.length; index += 1) {
+    const event = retainedEvents[index];
+    if (event?.type !== "tool_execution_start" && event?.type !== "tool_execution_end") continue;
+    const call = { assistantEntryId: null, toolCallId: event.toolCallId, toolName: event.toolName };
+    const record = { event, index, call };
+    if (!validEntryId(event.toolCallId) || !validEntryId(event.toolName)) {
+      addIssue("invalid", "native_tool_event_identity_malformed", { call });
+    }
+    if (event.type === "tool_execution_start") starts.push(record);
+    else {
+      ends.push(record);
+      if (typeof event.isError !== "boolean") addIssue("invalid", "native_tool_end_event_malformed", { call });
+    }
+  }
+  const validStarts = starts.filter(record => validEntryId(record.event.toolCallId) && validEntryId(record.event.toolName));
+  const validEnds = ends.filter(record => validEntryId(record.event.toolCallId) && validEntryId(record.event.toolName));
+  const startsById = groupBy(validStarts, record => record.event.toolCallId);
+  const endsById = groupBy(validEnds, record => record.event.toolCallId);
+  const startsByIdentity = groupBy(validStarts, record => JSON.stringify([record.event.toolCallId, record.event.toolName]));
+  const endsByIdentity = groupBy(validEnds, record => JSON.stringify([record.event.toolCallId, record.event.toolName]));
+  for (const records of [...startsById.values(), ...endsById.values()]) {
+    if (records.length > 1) {
+      for (const record of records) addIssue("invalid", "duplicate_native_tool_event", { call: record.call });
+    }
+  }
+  for (const record of [...starts, ...ends]) {
+    const expected = expectedById.get(record.event.toolCallId) ?? [];
+    if (expected.length === 0) {
+      addIssue("incomplete", "native_tool_event_without_assistant_call", { call: record.call });
+    } else if (!expected.some(candidate => candidate.call.toolName === record.event.toolName)) {
+      addIssue("invalid", "native_tool_event_name_mismatch", { call: record.call });
+    }
+  }
+  for (const expected of expectedCalls) {
+    const call = expected.call;
+    const identity = JSON.stringify([call.toolCallId, call.toolName]);
+    const matchingStarts = startsByIdentity.get(identity) ?? [];
+    const matchingEnds = endsByIdentity.get(identity) ?? [];
+    if (matchingStarts.length === 0 && !(startsById.get(call.toolCallId)?.length)) {
+      addIssue("incomplete", "native_tool_start_missing", { entryId: call.assistantEntryId, call });
+    }
+    if (matchingEnds.length === 0 && !(endsById.get(call.toolCallId)?.length)) {
+      addIssue("incomplete", "native_tool_end_missing", { entryId: call.assistantEntryId, call });
+    }
+    if (matchingStarts.length === 1 && matchingEnds.length === 1 && matchingStarts[0].index >= matchingEnds[0].index) {
+      addIssue("invalid", "native_tool_end_not_after_start", { entryId: call.assistantEntryId, call });
+    }
+  }
+
+  // Native tool-result entries close every expected call and establish entry ordering.
+  const usableToolResults = nativeToolResults.filter(record =>
+    record.onBranch
+    && validEntryId(record.entry?.id)
+    && validEntryId(record.call.toolCallId)
+    && validEntryId(record.call.toolName)
+    && typeof record.isError === "boolean");
+  const toolResultsById = groupBy(usableToolResults, record => record.call.toolCallId);
+  const toolResultsByIdentity = groupBy(usableToolResults, record => JSON.stringify([record.call.toolCallId, record.call.toolName]));
+  for (const records of toolResultsById.values()) {
+    if (records.length > 1) {
+      for (const record of records) {
+        addIssue("invalid", "duplicate_native_tool_result", { entryId: record.entry.id, call: record.call });
+      }
+    }
+  }
+  for (const result of usableToolResults) {
+    const expected = expectedById.get(result.call.toolCallId) ?? [];
+    if (expected.length === 0) {
+      addIssue("invalid", "orphan_native_tool_result", { entryId: result.entry.id, call: result.call });
+    } else if (!expected.some(candidate => candidate.call.toolName === result.call.toolName)) {
+      addIssue("invalid", "native_tool_result_name_mismatch", { entryId: result.entry.id, call: result.call });
+    }
+  }
+  for (const expected of expectedCalls) {
+    const call = expected.call;
+    const identity = JSON.stringify([call.toolCallId, call.toolName]);
+    const results = toolResultsByIdentity.get(identity) ?? [];
+    if (results.length === 0 && !(toolResultsById.get(call.toolCallId)?.length)) {
+      addIssue("incomplete", "native_tool_result_missing", { entryId: call.assistantEntryId, call });
+      continue;
+    }
+    if (results.length !== 1) continue;
+    const nativeResult = results[0];
+    if (nativeResult.index <= expected.index) {
+      addIssue("invalid", "native_tool_result_not_after_assistant_call", { entryId: nativeResult.entry.id, call });
+    }
+    const dispatches = dispatchesByCall.get(authorityCallKey(call)) ?? [];
+    if (dispatches.length === 1) {
+      const dispatch = dispatches[0];
+      if (dispatch.index >= nativeResult.index) {
+        addIssue("invalid", "native_tool_result_not_after_dispatch", { entryId: nativeResult.entry.id, call });
+      }
+      if (dispatch.data.decision === "blocked" && nativeResult.isError !== true) {
+        addIssue("invalid", "blocked_dispatch_has_non_error_tool_result", { entryId: nativeResult.entry.id, call });
+      }
+      if (dispatch.data.decision === "execution_allowed") {
+        const decisions = resultsByCall.get(authorityCallKey(call)) ?? [];
+        if (decisions.length === 1 && decisions[0].index >= nativeResult.index) {
+          addIssue("invalid", "native_tool_result_not_after_result_receipt", { entryId: nativeResult.entry.id, call });
+        }
+      }
+    }
+  }
+
+  let coverage;
+  if (invalid) coverage = "invalid";
+  else if (finalCaptureComplete !== true) coverage = "incomplete";
+  else if (coverageRecords.length === 0) coverage = "unobserved";
+  else if (incomplete) coverage = "incomplete";
+  else coverage = "complete";
+  return {
+    coverage,
+    declarationEntryId,
+    capturedLeafId,
+    counts: {
+      calls: assistantCalls.length,
+      starts: starts.length,
+      ends: ends.length,
+      toolResults: nativeToolResults.length,
+      dispatches: authorityRecords.filter(record => record.data.kind === "dispatch").length,
+      requiredResults: authorityRecords.filter(record => record.data.kind === "dispatch" && record.data.decision === "execution_allowed").length,
+      resultDecisions: authorityRecords.filter(record => record.data.kind === "result").length,
+    },
+    blockedDispatches,
+    invalidatedResults,
+    issues,
+    denialCount: coverage === "complete" ? blockedDispatches.length : null,
+    invalidationCount: coverage === "complete" ? invalidatedResults.length : null,
+  };
 }
 
 function assistantEntryMessages(entries) {
@@ -1039,6 +1513,8 @@ async function runOne(configuration) {
   let preflightResult = { passed: false, reason: "preflight_not_completed" };
   let commands = [];
   let entries = [];
+  let capturedLeafId = null;
+  let finalCaptureComplete = false;
   let workflow;
   let sessionStats = null;
   let finalState = null;
@@ -1063,7 +1539,10 @@ async function runOne(configuration) {
     workflow = flow.workflow;
     sessionStats = (await client.request("get_session_stats", {}, deadline, 10_000)).data;
     finalState = (await client.request("get_state", {}, deadline, 10_000)).data;
-    entries = await client.entries(deadline, 10_000);
+    const finalEntryPage = await client.entryPage(deadline, 10_000);
+    entries = finalEntryPage.entries;
+    capturedLeafId = finalEntryPage.leafId;
+    finalCaptureComplete = true;
     workflow = configuration.runtime.recoverWorkflow(entries);
   } catch (error) {
     runError = error;
@@ -1075,7 +1554,14 @@ async function runOne(configuration) {
     if (client) {
       if (flow.approvalRequest && !flow.approval?.approved) await recoverHostApproval(client, flow, Date.now() + 3_000, 3_000);
       await collectAfterFailure(client);
-      try { entries = await client.entries(Date.now() + 3_000, 3_000); } catch {}
+      finalCaptureComplete = false;
+      capturedLeafId = null;
+      try {
+        const finalEntryPage = await client.entryPage(Date.now() + 3_000, 3_000);
+        entries = finalEntryPage.entries;
+        capturedLeafId = finalEntryPage.leafId;
+        finalCaptureComplete = true;
+      } catch {}
       try { workflow = configuration.runtime.recoverWorkflow(entries); } catch {}
       try { sessionStats = (await client.request("get_session_stats", {}, Date.now() + 3_000, 3_000)).data; } catch {}
       try { finalState = (await client.request("get_state", {}, Date.now() + 3_000, 3_000)).data; } catch {}
@@ -1104,7 +1590,12 @@ async function runOne(configuration) {
   const outputContents = readOutputContents(workspace, fixture);
   const events = client?.events ?? [];
   const providerFailures = detectProviderFailures(entries, events, workflow, `${runError ? safeError(runError) : ""}\n${client?.stderr ?? ""}`);
-  const operationAudit = auditObservedOperations(events, { fixture, workspace, approvalEventIndex: flow.approvalBoundaryEventIndex });
+  const fixturePolicyAudit = auditFixturePolicy(events, { fixture, workspace, approvalEventIndex: flow.approvalBoundaryEventIndex });
+  const nativeToolAuthorityAudit = auditNativeToolAuthority(events, {
+    entries,
+    leafId: capturedLeafId,
+    finalCaptureComplete,
+  });
   const metrics = summarizeObservedMetrics(entries, workflow, sessionStats, events);
   const observation = {
     preflight: preflightResult,
@@ -1115,7 +1606,8 @@ async function runOne(configuration) {
     beforeFiles,
     afterFiles,
     outputContents,
-    operationAudit,
+    fixturePolicyAudit,
+    nativeToolAuthorityAudit,
     planContract: flow.planContract,
     approvalEligibility: flow.approvalEligibility,
     approval: flow.approval,
@@ -1167,7 +1659,8 @@ async function runOne(configuration) {
     } : null,
     metrics,
     assertions: grade.assertions,
-    operationAudit,
+    fixturePolicyAudit,
+    nativeToolAuthorityAudit,
     process: exit,
     error: runError ? safeError(runError) : null,
     protocolError: client?.protocolError ? safeError(client.protocolError) : null,

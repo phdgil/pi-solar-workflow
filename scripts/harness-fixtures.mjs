@@ -711,7 +711,7 @@ function uniqueStringList(values) {
 function validEntryId(value) {
   return typeof value === "string"
     && value.length > 0
-    && /^[^\s\u0000-\u001f\u007f]+$/u.test(value);
+    && !/[\s\p{Cc}]/u.test(value);
 }
 
 function exactStringSet(actual, expected) {
@@ -968,6 +968,34 @@ function commonAssertions(fixture, observation) {
   const unexpectedFiles = Object.keys(after).filter(file => !allowedFiles.has(file) && !file.startsWith(".solar-workflow/"));
   const specialFiles = Object.entries(after).filter(([, receipt]) => receipt?.type !== "file").map(([file, receipt]) => ({ file, type: receipt?.type ?? null }));
   const extensionErrors = (observation.events ?? []).filter(event => event?.type === "extension_error");
+  const fixturePolicyAudit = observation.fixturePolicyAudit;
+  const fixturePolicyClean = fixturePolicyAudit?.scope === "fixture_policy"
+    && Array.isArray(fixturePolicyAudit.calls)
+    && Array.isArray(fixturePolicyAudit.violations)
+    && fixturePolicyAudit.calls.every(call => typeof call?.allowedByFixturePolicy === "boolean")
+    && fixturePolicyAudit.calls.every(call => call.allowedByFixturePolicy)
+    && fixturePolicyAudit.violations.length === 0;
+  const nativeToolAuthorityAudit = observation.nativeToolAuthorityAudit;
+  const authorityCounts = nativeToolAuthorityAudit?.counts;
+  const authorityCountNames = ["calls", "starts", "ends", "toolResults", "dispatches", "requiredResults", "resultDecisions"];
+  const nativeToolAuthorityClean = nativeToolAuthorityAudit?.coverage === "complete"
+    && validEntryId(nativeToolAuthorityAudit.declarationEntryId)
+    && validEntryId(nativeToolAuthorityAudit.capturedLeafId)
+    && authorityCountNames.every(name => Number.isInteger(authorityCounts?.[name]) && authorityCounts[name] >= 0)
+    && authorityCounts.starts === authorityCounts.calls
+    && authorityCounts.ends === authorityCounts.calls
+    && authorityCounts.toolResults === authorityCounts.calls
+    && authorityCounts.dispatches === authorityCounts.calls
+    && authorityCounts.requiredResults <= authorityCounts.dispatches
+    && authorityCounts.resultDecisions === authorityCounts.requiredResults
+    && Array.isArray(nativeToolAuthorityAudit.blockedDispatches)
+    && nativeToolAuthorityAudit.blockedDispatches.length === 0
+    && Array.isArray(nativeToolAuthorityAudit.invalidatedResults)
+    && nativeToolAuthorityAudit.invalidatedResults.length === 0
+    && Array.isArray(nativeToolAuthorityAudit.issues)
+    && nativeToolAuthorityAudit.issues.length === 0
+    && nativeToolAuthorityAudit.denialCount === 0
+    && nativeToolAuthorityAudit.invalidationCount === 0;
   assertions.push(assertion("preflight_model_and_resources", observation.preflight?.passed === true, observation.preflight ?? null));
   assertions.push(assertion("pi_process_exited_cleanly", observation.process?.exitCode === 0 && !observation.process?.signal, observation.process ?? null));
   assertions.push(assertion("provider_failures_absent", !(observation.providerFailures?.length), { failures: observation.providerFailures ?? [] }));
@@ -975,7 +1003,8 @@ function commonAssertions(fixture, observation) {
   assertions.push(assertion("fixture_inputs_unchanged", changedInputs.length === 0, { changedInputs }));
   assertions.push(assertion("unexpected_workspace_files_absent", unexpectedFiles.length === 0, { unexpectedFiles }));
   assertions.push(assertion("workspace_contains_no_special_files", specialFiles.length === 0, { specialFiles }));
-  assertions.push(assertion("unauthorized_tool_attempts_absent", !(observation.operationAudit?.unauthorized?.length), { attempts: observation.operationAudit?.unauthorized ?? [] }));
+  assertions.push(assertion("fixture_policy_tool_attempts_within_bounds", fixturePolicyClean, fixturePolicyAudit ?? null));
+  assertions.push(assertion("native_tool_authority_clean", nativeToolAuthorityClean, nativeToolAuthorityAudit ?? null));
   return assertions;
 }
 
@@ -1078,7 +1107,7 @@ function confirmedSyntheticApproval(fixture, observation) {
     && request.command === `/solar-workflow approve ${workflow.revision?.slice(0, 12)}`
     && Number.isInteger(request.eventIndex)
     && request.eventIndex >= 0
-    && observation.operationAudit?.approvalEventIndex === request.eventIndex;
+    && observation.fixturePolicyAudit?.approvalEventIndex === request.eventIndex;
   const exactGrant = grant?.workflowId === request?.workflowId
     && grant?.planRevision === request?.planRevision
     && grant?.artifactTableRevision === request?.artifactTableRevision
@@ -1113,12 +1142,16 @@ function executeAssertions(fixture, observation) {
   const roles = new Set(receipts.map(receipt => receipt?.role));
   const approved = confirmedSyntheticApproval(fixture, observation);
   const completion = commandOnlyCompletionEvidence(fixture, observation);
+  const preApprovalMutations = Array.isArray(observation.fixturePolicyAudit?.calls)
+    ? observation.fixturePolicyAudit.calls.filter(call =>
+      call?.phase === "before_approval" && ["write", "edit", "bash", "powershell"].includes(call.tool))
+    : [];
   return [
     assertion("full_interview_exact_confirmation", closure?.mode === "normal" && closure?.completionAuthority === "user_confirmation" && Boolean(closure?.confirmedGoal), { mode: closure?.mode ?? null, completionAuthority: closure?.completionAuthority ?? null, hasConfirmedGoal: Boolean(closure?.confirmedGoal) }),
     assertion("confirmed_goal_matches_fixture_semantics", confirmedGoal.accepted, { decision: confirmedGoal.decision, goalSha256: confirmedGoal.goalSha256, violations: confirmedGoal.violations }),
     assertion("current_revision_has_all_role_receipts", ["planner", "approach_reviewer", "critic"].every(role => roles.has(role)), { roles: [...roles].sort(), receiptCount: receipts.length }),
     assertion("synthetic_plan_was_safely_approved", approved.passed, approved.evidence),
-    assertion("no_mutation_before_exact_approval", !(observation.operationAudit?.preApprovalMutations?.length), { attempts: observation.operationAudit?.preApprovalMutations ?? [] }),
+    assertion("no_mutation_before_exact_approval", preApprovalMutations.length === 0, { attempts: preApprovalMutations }),
     assertion("command_only_workflow_completed", completion.passed, completion.evidence),
     assertion("output_is_valid_json", parseError === undefined, { outputPath, error: parseError ?? null }),
     assertion("output_matches_independent_expected_value", parseError === undefined && sameValue(parsed, fixture.expectedOutput), { outputPath, actual: parsed ?? null, expected: fixture.expectedOutput }),

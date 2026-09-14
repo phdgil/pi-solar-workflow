@@ -2,7 +2,7 @@
 
 ## Evidence status: Unreleased
 
-The controller-rigor changes described in this checkout require fresh verification. At the time this documentation was updated, no deterministic suite, Pi smoke, package/install check, deployment, live Solar/Tavily/Unstructured call, frozen baseline comparison, or qualitative acceptance run had been recorded for this revision. Do not treat planned coverage, source inspection, schema validity, or earlier checkout results as a pass.
+Revision-specific deterministic, installed-Pi and live Solar results are recorded in [HARNESS_EXPERIMENTS.md](HARNESS_EXPERIMENTS.md). Those results do not establish the separate external/human acceptance protocol below, hosted research-service acceptance, deployment, convergence or universal correctness. Do not treat planned coverage, source inspection, schema validity or earlier checkout results as a pass for changed bytes.
 
 Historical releases and earlier working-tree checks remain historical evidence for their own bytes only. They do not validate the current interview, role-session, authority, artifact-identity, or final-freshness changes. See the corresponding tag and [changelog](../CHANGELOG.md) when reproducing an old release.
 
@@ -12,11 +12,14 @@ Historical releases and earlier working-tree checks remain historical evidence f
 | --- | --- | --- |
 | Pure and fake-session deterministic tests | Contract parsing, state transitions, budgets, lifecycle races, authority predicates, hashes, and failure handling under controlled inputs. | Live provider behavior, semantic plan quality, research usefulness, or human document quality. |
 | Offline real-Pi smoke | Package discovery and integration with a scripted/local endpoint and isolated Pi state. | A live Solar judgment or hosted research-service result. |
+| Complete native tool authority audit | Recorded dispatch decisions and execution-result authority rechecks for the captured main-session native tool calls. | Controller-internal gates, validation inside control-tool bodies, provider reliability, or permission to approve/complete a workflow. |
 | Package/source-installed manifest | Which reviewed bytes were packaged or installed. | Runtime correctness or model quality. |
 | Separately authorized frozen baseline/candidate run | Observable behavior under the two fixed tasks and common infrastructure. | Universal model superiority or behavior outside those cases. |
 | Current qualitative human review | Acceptance of the named report/evidence bytes at that moment. | Perpetual filesystem integrity or an objective numeric quality guarantee. |
 
 A test fixture, mock model, or source/type review must never be described as a live model result. A hosted retrieval receipt proves retrieval, not factual correctness. A human rubric decision is not replaced by a model score.
+
+`fixturePolicyAudit` checks the experiment's path/command/approval envelope, not the host's current-step decision. `nativeToolAuthorityAudit` separately joins controller-owned native receipts to real assistant calls, state entries, results and the captured leaf. `native_tool_authority_clean` requires complete coverage and no recorded dispatch blocks or execution-result invalidations. Missing, malformed, ambiguous or incomplete provenance is not zero denials; neither an error string nor `isError` supplies an authority decision. Earlier fixture-only grades remain historical and are not retroactively upgraded to this evidence.
 
 ## Deterministic verification plan
 
@@ -55,6 +58,7 @@ The deterministic evidence set must cover at least:
 11. A modified final invalidating a constant report and human token; current command-only finals auto-completing only when all conditions pass; every rubric/human final waiting.
 12. Windows case, `..`, absolute path, junction, alternate-data-stream, and collision defenses; generic preapproval mutators denied while controlled public research/controller artifacts remain possible.
 13. Explicit package file literals, optional host peers, no dependencies/bundles/install hooks, exactly four skills, the `solar-pro4`/Max mapping, public-doc privacy, installed-copy isolation, and unchanged GJC/unrelated-work manifests.
+14. Native authority receipts preserve real call/state identities and existing guard behavior; deterministic cases reject missing, duplicate, orphan and incomplete-capture evidence. Installed-Pi loopback must prove allowed execution, a fixture-allowed host block, ordinary tool-error handling, native entry ordering and non-model-visible custom records without extra retries.
 
 A failing check is evidence of an unresolved defect, not permission to weaken the assertion, suppress a warning, or substitute a prose claim.
 

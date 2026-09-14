@@ -42,6 +42,7 @@ registerHooks({
 
 const { installLiteRuntime } = await import("./extension.ts");
 const { WORKFLOW_STATE, recoverWorkflow } = await import("./workflow.ts");
+const { NATIVE_TOOL_AUTHORITY_ENTRY, validateNativeToolAuthorityReceipt } = await import("./loop.ts");
 const { renderHarnessRolePrompt } = await import("./harness.ts");
 const { EXECUTION_CONTRACT_ID_PATTERN } = await import("./planner-output.ts");
 const {
@@ -227,6 +228,37 @@ class FakePi {
   latest(customType) {
     return [...this.entries].reverse().find(entry => entry.type === "custom" && entry.customType === customType)?.data;
   }
+}
+
+function retainAssistantToolCalls(pi, calls) {
+  const id = `assistant-${++pi.entrySequence}`;
+  pi.entries.push({
+    type: "message",
+    id,
+    message: {
+      role: "assistant",
+      content: calls.map(call => ({
+        type: "toolCall",
+        id: call.toolCallId,
+        name: call.toolName,
+        arguments: structuredClone(call.input ?? {}),
+      })),
+    },
+  });
+  return id;
+}
+
+async function emitRetainedToolCall(pi, event, siblingCalls = [], ctx = pi.ctx) {
+  const assistantEntryId = retainAssistantToolCalls(pi, [event, ...siblingCalls]);
+  const outcome = await pi.emit("tool_call", event, ctx);
+  return { assistantEntryId, outcome };
+}
+
+function nativeToolAuthorityEntries(pi, kind) {
+  return pi.entries
+    .filter(entry => entry.type === "custom" && entry.customType === NATIVE_TOOL_AUTHORITY_ENTRY)
+    .filter(entry => kind === undefined || entry.data?.kind === kind)
+    .map(entry => ({ ...entry, data: validateNativeToolAuthorityReceipt(entry.data) }));
 }
 
 function createRoleFactory(responder, stats = {}) {
@@ -2534,6 +2566,522 @@ async function reviewedExecution(workspace, { gateKind = "command", gateCount = 
   return { pi, contract };
 }
 
+test("native authority coverage and dormant dispatch decisions use exact retained call identities", async () => fixture(async workspace => {
+  const { pi } = installHost(workspace, passingResponder(contractFixture()));
+  await pi.emit("session_start", { type: "session_start", reason: "startup" });
+  const coverage = nativeToolAuthorityEntries(pi, "coverage");
+  assert.equal(coverage.length, 1);
+  assert.equal(pi.entries[0].id, coverage[0].id);
+  assert.deepEqual(coverage[0].data, {
+    version: 1,
+    kind: "coverage",
+    scope: "main_session_native_tool_hooks",
+    dispatch: "every_call",
+    result: "every_execution_allowed_call",
+  });
+
+  const ordinary = { type: "tool_call", toolCallId: "dormant-read", toolName: "read", input: { path: "input.txt" } };
+  const ordinaryDispatch = await emitRetainedToolCall(pi, ordinary);
+  assert.equal(ordinaryDispatch.outcome, undefined);
+  const allowed = nativeToolAuthorityEntries(pi, "dispatch").find(entry => entry.data.call.toolCallId === ordinary.toolCallId);
+  assert.deepEqual(allowed.data, {
+    version: 1,
+    kind: "dispatch",
+    call: {
+      assistantEntryId: ordinaryDispatch.assistantEntryId,
+      toolCallId: ordinary.toolCallId,
+      toolName: ordinary.toolName,
+    },
+    stateEntryId: null,
+    stepId: null,
+    decision: "dispatch_allowed",
+    code: null,
+  });
+
+  const duplicate = await pi.emit("tool_call", ordinary);
+  assert.equal(duplicate.block, true);
+  assert.equal(duplicate.terminate, true);
+  assert.match(duplicate.reason, /Duplicate tool-call ID/u);
+
+  const mixedEvent = { type: "tool_call", toolCallId: "mixed-control", toolName: "solar_revisit", input: {} };
+  const mixed = await emitRetainedToolCall(pi, mixedEvent, [
+    { type: "tool_call", toolCallId: "mixed-read", toolName: "read", input: { path: "input.txt" } },
+  ]);
+  assert.equal(mixed.outcome.block, true);
+  assert.equal(mixed.outcome.terminate, true);
+  assert.match(mixed.outcome.reason, /must be the only tool call/u);
+
+  const decisions = nativeToolAuthorityEntries(pi, "dispatch").map(entry => ({
+    toolCallId: entry.data.call.toolCallId,
+    decision: entry.data.decision,
+    code: entry.data.code,
+  }));
+  assert.deepEqual(decisions, [
+    { toolCallId: "dormant-read", decision: "dispatch_allowed", code: null },
+    { toolCallId: "dormant-read", decision: "blocked", code: "duplicate_call" },
+    { toolCallId: "mixed-control", decision: "blocked", code: "mixed_control_batch" },
+  ]);
+}));
+
+test("an active duplicate call binds its blocked receipt to current persisted state without replacing the original authorization", async () => fixture(async workspace => {
+  const { pi } = await reviewedExecution(workspace);
+  const call = {
+    type: "tool_call",
+    toolCallId: "active-duplicate-write",
+    toolName: "write",
+    input: { path: "result.txt", content: "current" },
+  };
+  const first = await emitRetainedToolCall(pi, call);
+  assert.equal(first.outcome, undefined);
+  const currentState = [...pi.entries].reverse().find(entry =>
+    entry.type === "custom"
+    && entry.customType === WORKFLOW_STATE
+    && entry.data?.id === pi.workflow().id);
+  assert.ok(currentState?.id);
+
+  const duplicate = await pi.emit("tool_call", { ...call, input: { path: "result.txt", content: "must not replace authorization" } });
+  assert.equal(duplicate.block, true);
+  assert.equal(duplicate.terminate, true);
+  assert.match(duplicate.reason, /Duplicate tool-call ID/u);
+  const duplicateReceipt = nativeToolAuthorityEntries(pi, "dispatch").find(entry =>
+    entry.data.call.toolCallId === call.toolCallId
+    && entry.data.decision === "blocked"
+    && entry.data.code === "duplicate_call");
+  assert.ok(duplicateReceipt);
+  assert.equal(duplicateReceipt.data.call.assistantEntryId, first.assistantEntryId);
+  assert.equal(duplicateReceipt.data.stateEntryId, currentState.id);
+  assert.ok(pi.entries.findIndex(entry => entry.id === currentState.id) < pi.entries.findIndex(entry => entry.id === duplicateReceipt.id));
+
+  const result = await pi.emit("tool_result", {
+    type: "tool_result",
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    input: call.input,
+    content: [{ type: "text", text: "original authorized result" }],
+    details: undefined,
+    isError: false,
+  });
+  assert.equal(result, undefined);
+  assert.ok(nativeToolAuthorityEntries(pi, "result").some(entry =>
+    entry.data.call.assistantEntryId === first.assistantEntryId
+    && entry.data.call.toolCallId === call.toolCallId
+    && entry.data.decision === "current"));
+}));
+
+test("native dispatch block codes observe every existing guard without changing its outcome", async () => fixture(async workspace => {
+  const interviewHost = installHost(workspace, passingResponder(contractFixture())).pi;
+  await startAndInitialize(interviewHost, "/skill:solar-interview --plan-only Clarify the bounded result.");
+  const deniedRead = await emitRetainedToolCall(interviewHost, {
+    type: "tool_call",
+    toolCallId: "audit-private-read",
+    toolName: "read",
+    input: { path: ".pi/private-state.json" },
+  });
+  assert.equal(deniedRead.outcome.block, true);
+  assert.equal(deniedRead.outcome.terminate, true);
+  assert.match(deniedRead.outcome.reason, /Interview read denied before dispatch/u);
+  for (let index = 2; index <= 6; index += 1) {
+    const allowed = await emitRetainedToolCall(interviewHost, {
+      type: "tool_call",
+      toolCallId: `audit-interview-read-${index}`,
+      toolName: "read",
+      input: { path: `ordinary-${index}.txt` },
+    });
+    assert.equal(allowed.outcome, undefined);
+  }
+  const exhausted = await emitRetainedToolCall(interviewHost, {
+    type: "tool_call",
+    toolCallId: "audit-interview-read-7",
+    toolName: "read",
+    input: { path: "ordinary-7.txt" },
+  });
+  assert.equal(exhausted.outcome.block, true);
+  assert.equal(exhausted.outcome.terminate, true);
+  assert.match(exhausted.outcome.reason, /Interview tool budget reached/u);
+
+  const waitingHost = installHost(workspace, passingResponder(contractFixture())).pi;
+  await startAndInitialize(waitingHost, "/skill:solar-plan Create the reviewed bounded plan.");
+  assertToolSucceeded(await waitingHost.callTool("solar_plan_ready", {}), "waiting-boundary plan");
+  assert.equal(waitingHost.workflow().status, "awaiting_gate_review");
+  const waiting = await emitRetainedToolCall(waitingHost, {
+    type: "tool_call",
+    toolCallId: "audit-waiting-write",
+    toolName: "write",
+    input: { path: "result.txt", content: "blocked" },
+  });
+  assert.equal(waiting.outcome.block, true);
+  assert.equal(waiting.outcome.terminate, true);
+  assert.match(waiting.outcome.reason, /waiting for an explicit human\/recovery boundary/u);
+
+  const executionHost = (await reviewedExecution(workspace)).pi;
+  const controlAllowed = await emitRetainedToolCall(executionHost, {
+    type: "tool_call",
+    toolCallId: "audit-control-allowed",
+    toolName: "solar_revisit",
+    input: {},
+  });
+  assert.equal(controlAllowed.outcome, undefined);
+  const controlReceipt = nativeToolAuthorityEntries(executionHost, "dispatch").find(entry => entry.data.call.toolCallId === "audit-control-allowed");
+  assert.equal(controlReceipt.data.decision, "dispatch_allowed");
+  assert.equal(controlReceipt.data.code, null);
+  assert.equal(controlReceipt.data.stepId, null);
+
+  const stageDenied = await emitRetainedToolCall(executionHost, {
+    type: "tool_call",
+    toolCallId: "audit-stage-read",
+    toolName: "read",
+    input: { path: "result.txt" },
+  });
+  assert.equal(stageDenied.outcome.block, true);
+  assert.equal(stageDenied.outcome.terminate, true);
+  assert.match(stageDenied.outcome.reason, /default-denied/u);
+
+  executionHost.ctx.model = GENERIC_MODEL;
+  const modelDenied = await emitRetainedToolCall(executionHost, {
+    type: "tool_call",
+    toolCallId: "audit-model-write",
+    toolName: "write",
+    input: { path: "result.txt", content: "blocked" },
+  });
+  assert.equal(modelDenied.outcome.block, true);
+  assert.equal(modelDenied.outcome.terminate, true);
+  assert.match(modelDenied.outcome.reason, /model\/thinking identity changed/u);
+  executionHost.ctx.model = SOLAR_MODEL;
+
+  const guardDenied = await emitRetainedToolCall(executionHost, {
+    type: "tool_call",
+    toolCallId: "audit-undeclared-write",
+    toolName: "write",
+    input: { path: "undeclared.txt", content: "blocked" },
+  });
+  assert.equal(guardDenied.outcome.block, true);
+  assert.equal(guardDenied.outcome.terminate, true);
+  assert.match(guardDenied.outcome.reason, /does not declare|default-denied/iu);
+
+  const codes = [
+    ...nativeToolAuthorityEntries(interviewHost, "dispatch"),
+    ...nativeToolAuthorityEntries(waitingHost, "dispatch"),
+    ...nativeToolAuthorityEntries(executionHost, "dispatch"),
+  ].filter(entry => entry.data.decision === "blocked").map(entry => entry.data.code);
+  assert.deepEqual(new Set(codes), new Set([
+    "interview_budget",
+    "interview_read_denied",
+    "waiting_boundary",
+    "model_identity",
+    "stage_tool_denied",
+    "execution_guard_rejected",
+  ]));
+  for (const host of [interviewHost, waitingHost, executionHost]) {
+    for (const receipt of nativeToolAuthorityEntries(host, "dispatch")) {
+      assert.equal(typeof receipt.data.stateEntryId, "string");
+      const stateIndex = host.entries.findIndex(entry => entry.id === receipt.data.stateEntryId);
+      const receiptIndex = host.entries.findIndex(entry => entry.id === receipt.id);
+      assert.ok(stateIndex >= 0 && stateIndex < receiptIndex);
+      assert.equal(host.entries[stateIndex].customType, WORKFLOW_STATE);
+    }
+  }
+}));
+
+test("execution receipts bind persisted state and original calls across ordinary errors and stale results", async () => fixture(async workspace => {
+  const { pi } = await reviewedExecution(workspace);
+  const ordinaryCall = {
+    type: "tool_call",
+    toolCallId: "audit-ordinary-error",
+    toolName: "write",
+    input: { path: "result.txt", content: "attempted" },
+  };
+  const ordinaryDispatch = await emitRetainedToolCall(pi, ordinaryCall);
+  assert.equal(ordinaryDispatch.outcome, undefined);
+  const dispatchEntry = nativeToolAuthorityEntries(pi, "dispatch").find(entry => entry.data.call.toolCallId === ordinaryCall.toolCallId);
+  assert.equal(dispatchEntry.data.decision, "execution_allowed");
+  assert.equal(dispatchEntry.data.code, null);
+  assert.equal(dispatchEntry.data.call.assistantEntryId, ordinaryDispatch.assistantEntryId);
+  assert.equal(dispatchEntry.data.stepId, "S1");
+  const stateIndex = pi.entries.findIndex(entry => entry.id === dispatchEntry.data.stateEntryId);
+  const dispatchIndex = pi.entries.findIndex(entry => entry.id === dispatchEntry.id);
+  assert.ok(stateIndex >= 0 && stateIndex < dispatchIndex);
+  assert.equal(pi.entries[stateIndex].customType, WORKFLOW_STATE);
+
+  pi.entries.push({
+    type: "message",
+    id: `assistant-${++pi.entrySequence}`,
+    message: { role: "assistant", content: [{ type: "text", text: "A later assistant message cannot replace the original call origin." }] },
+  });
+  const ordinaryError = {
+    type: "tool_result",
+    toolCallId: ordinaryCall.toolCallId,
+    toolName: ordinaryCall.toolName,
+    input: ordinaryCall.input,
+    content: [{ type: "text", text: "The native write tool reported an ordinary error." }],
+    details: { ordinaryToolError: true },
+    isError: true,
+  };
+  const originalError = structuredClone(ordinaryError);
+  assert.equal(await pi.emit("tool_result", ordinaryError), undefined);
+  assert.deepEqual(ordinaryError, originalError);
+  const current = nativeToolAuthorityEntries(pi, "result").find(entry => entry.data.call.toolCallId === ordinaryCall.toolCallId);
+  assert.deepEqual(current.data, {
+    version: 1,
+    kind: "result",
+    call: {
+      assistantEntryId: ordinaryDispatch.assistantEntryId,
+      toolCallId: ordinaryCall.toolCallId,
+      toolName: ordinaryCall.toolName,
+    },
+    decision: "current",
+    code: null,
+  });
+
+  const duplicate = await pi.emit("tool_result", ordinaryError);
+  assert.equal(duplicate.isError, true);
+  assert.equal(duplicate.details.staleExecutionResult, true);
+  assert.ok(nativeToolAuthorityEntries(pi, "result").some(entry =>
+    entry.data.call.toolCallId === ordinaryCall.toolCallId
+    && entry.data.decision === "invalidated"
+    && entry.data.code === "duplicate_result"));
+
+  const staleCall = {
+    type: "tool_call",
+    toolCallId: "audit-stale-recheck",
+    toolName: "write",
+    input: { path: "result.txt", content: "late" },
+  };
+  assert.equal((await emitRetainedToolCall(pi, staleCall)).outcome, undefined);
+  pi.appendEntry(WORKFLOW_STATE, { ...pi.workflow(), status: "stopped", reason: "Injected stale result authority." });
+  const stale = await pi.emit("tool_result", {
+    type: "tool_result",
+    toolCallId: staleCall.toolCallId,
+    toolName: staleCall.toolName,
+    input: staleCall.input,
+    content: [{ type: "text", text: "late native output" }],
+    details: undefined,
+    isError: false,
+  });
+  assert.equal(stale.isError, true);
+  assert.equal(stale.details.staleExecutionResult, true);
+  assert.ok(nativeToolAuthorityEntries(pi, "result").some(entry =>
+    entry.data.call.toolCallId === staleCall.toolCallId
+    && entry.data.decision === "invalidated"
+    && entry.data.code === "authority_recheck_failed"));
+
+  const unknownResult = {
+    type: "tool_result",
+    toolCallId: "audit-unknown-result",
+    toolName: "write",
+    input: { path: "result.txt" },
+    content: [{ type: "text", text: "unknown native output" }],
+    details: undefined,
+    isError: false,
+  };
+  const unknownAssistantEntryId = retainAssistantToolCalls(pi, [unknownResult]);
+  const unknown = await pi.emit("tool_result", unknownResult);
+  assert.equal(unknown.isError, true);
+  assert.equal(unknown.details.staleExecutionResult, true);
+  assert.ok(nativeToolAuthorityEntries(pi, "result").some(entry =>
+    entry.data.call.assistantEntryId === unknownAssistantEntryId
+    && entry.data.call.toolCallId === unknownResult.toolCallId
+    && entry.data.decision === "invalidated"
+    && entry.data.code === "unknown_authorization"));
+
+  const tombstoneHost = (await reviewedExecution(workspace)).pi;
+  const tombstoneCall = {
+    type: "tool_call",
+    toolCallId: "audit-tombstoned-result",
+    toolName: "write",
+    input: { path: "result.txt", content: "late" },
+  };
+  assert.equal((await emitRetainedToolCall(tombstoneHost, tombstoneCall)).outcome, undefined);
+  await tombstoneHost.command("solar-workflow", "stop");
+  const tombstoned = await tombstoneHost.emit("tool_result", {
+    type: "tool_result",
+    toolCallId: tombstoneCall.toolCallId,
+    toolName: tombstoneCall.toolName,
+    input: tombstoneCall.input,
+    content: [{ type: "text", text: "late native output" }],
+    details: undefined,
+    isError: false,
+  });
+  assert.equal(tombstoned.isError, true);
+  assert.equal(tombstoned.details.staleExecutionResult, true);
+  assert.ok(nativeToolAuthorityEntries(tombstoneHost, "result").some(entry =>
+    entry.data.call.toolCallId === tombstoneCall.toolCallId
+    && entry.data.decision === "invalidated"
+    && entry.data.code === "authorization_already_invalidated"));
+}));
+
+test("execution dispatch and result receipt append failures preserve authorization behavior and shutdown synthesizes no result", async () => fixture(async workspace => {
+  const { pi } = await reviewedExecution(workspace);
+  const appendEntry = pi.appendEntry.bind(pi);
+  const nativeEntryCount = nativeToolAuthorityEntries(pi).length;
+  let nativeAttempts = 0;
+  pi.appendEntry = (customType, data) => {
+    if (customType === NATIVE_TOOL_AUTHORITY_ENTRY) {
+      nativeAttempts += 1;
+      throw new Error("private native append failure");
+    }
+    return appendEntry(customType, data);
+  };
+
+  const completedCall = {
+    type: "tool_call",
+    toolCallId: "execution-append-failure",
+    toolName: "write",
+    input: { path: "result.txt", content: "current despite audit failure" },
+  };
+  assert.equal((await emitRetainedToolCall(pi, completedCall)).outcome, undefined);
+  assert.equal(nativeAttempts, 1);
+  assert.equal(nativeToolAuthorityEntries(pi).length, nativeEntryCount);
+  assert.match(pi.notifications.at(-1).message, /could not persist.*audit coverage is incomplete/iu);
+  assert.doesNotMatch(pi.notifications.at(-1).message, /private native append failure/u);
+
+  const completedResult = {
+    type: "tool_result",
+    toolCallId: completedCall.toolCallId,
+    toolName: completedCall.toolName,
+    input: completedCall.input,
+    content: [{ type: "text", text: "ordinary native result" }],
+    details: undefined,
+    isError: false,
+  };
+  assert.equal(await pi.emit("tool_result", completedResult), undefined);
+  assert.equal(nativeAttempts, 2);
+  assert.equal(nativeToolAuthorityEntries(pi).length, nativeEntryCount);
+  const duplicateResult = await pi.emit("tool_result", completedResult);
+  assert.equal(duplicateResult.isError, true);
+  assert.equal(duplicateResult.details.staleExecutionResult, true);
+  assert.equal(nativeAttempts, 3, "A failed result receipt must not prevent the existing consumed tombstone");
+
+  const pendingCall = {
+    type: "tool_call",
+    toolCallId: "execution-pending-shutdown",
+    toolName: "write",
+    input: { path: "result.txt", content: "pending" },
+  };
+  assert.equal((await emitRetainedToolCall(pi, pendingCall)).outcome, undefined);
+  assert.equal(nativeAttempts, 4);
+  const attemptsBeforeShutdown = nativeAttempts;
+  const resultEntriesBeforeShutdown = nativeToolAuthorityEntries(pi, "result").length;
+  await pi.emit("session_shutdown", { type: "session_shutdown", reason: "test" });
+  assert.equal(nativeAttempts, attemptsBeforeShutdown);
+  assert.equal(nativeToolAuthorityEntries(pi, "result").length, resultEntriesBeforeShutdown);
+}));
+
+test("ambiguous and wrong-name native origins leave no fabricated dispatch while preserving dormant tool allowance", async () => fixture(async workspace => {
+  const { pi } = installHost(workspace, passingResponder(contractFixture()));
+  await pi.emit("session_start", { type: "session_start", reason: "startup" });
+
+  const ambiguous = {
+    type: "tool_call",
+    toolCallId: "ambiguous-origin",
+    toolName: "read",
+    input: { path: "input.txt" },
+  };
+  retainAssistantToolCalls(pi, [ambiguous]);
+  retainAssistantToolCalls(pi, [ambiguous]);
+  assert.equal(await pi.emit("tool_call", ambiguous), undefined);
+  assert.equal(nativeToolAuthorityEntries(pi, "dispatch").some(entry => entry.data.call.toolCallId === ambiguous.toolCallId), false);
+  assert.match(pi.notifications.at(-1).message, /could not attribute.*exactly one retained assistant entry/iu);
+
+  const wrongName = {
+    type: "tool_call",
+    toolCallId: "wrong-name-origin",
+    toolName: "read",
+    input: { path: "input.txt" },
+  };
+  retainAssistantToolCalls(pi, [{ ...wrongName, toolName: "write" }]);
+  assert.equal(await pi.emit("tool_call", wrongName), undefined);
+  assert.equal(nativeToolAuthorityEntries(pi, "dispatch").some(entry => entry.data.call.toolCallId === wrongName.toolCallId), false);
+  assert.match(pi.notifications.at(-1).message, /could not attribute.*exactly one retained assistant entry/iu);
+}));
+
+test("missing native origins, state provenance, and receipt persistence never fabricate decisions or change guards", async () => fixture(async workspace => {
+  const missingOriginHost = installHost(workspace, passingResponder(contractFixture())).pi;
+  await missingOriginHost.emit("session_start", { type: "session_start", reason: "startup" });
+  const missingOrigin = await missingOriginHost.emit("tool_call", {
+    type: "tool_call",
+    toolCallId: "missing-origin",
+    toolName: "read",
+    input: { path: "input.txt" },
+  });
+  assert.equal(missingOrigin, undefined);
+  assert.equal(nativeToolAuthorityEntries(missingOriginHost, "dispatch").length, 0);
+  assert.match(missingOriginHost.notifications.at(-1).message, /could not attribute.*audit coverage is incomplete/iu);
+
+  const failingPersistenceHost = installHost(workspace, passingResponder(contractFixture())).pi;
+  const appendEntry = failingPersistenceHost.appendEntry.bind(failingPersistenceHost);
+  let nativeAttempts = 0;
+  failingPersistenceHost.appendEntry = (customType, data) => {
+    if (customType === NATIVE_TOOL_AUTHORITY_ENTRY) {
+      nativeAttempts += 1;
+      throw new Error("sensitive append failure detail");
+    }
+    return appendEntry(customType, data);
+  };
+  await failingPersistenceHost.emit("session_start", { type: "session_start", reason: "startup" });
+  assert.equal(nativeAttempts, 1);
+  const persistenceCall = {
+    type: "tool_call",
+    toolCallId: "persistence-failure",
+    toolName: "read",
+    input: { path: "input.txt" },
+  };
+  assert.equal((await emitRetainedToolCall(failingPersistenceHost, persistenceCall)).outcome, undefined);
+  assert.equal(nativeAttempts, 2);
+  assert.equal(nativeToolAuthorityEntries(failingPersistenceHost).length, 0);
+  assert.match(failingPersistenceHost.notifications.at(-1).message, /could not persist.*audit coverage is incomplete/iu);
+  assert.doesNotMatch(failingPersistenceHost.notifications.at(-1).message, /sensitive append failure detail/u);
+  const persistenceBlocked = await emitRetainedToolCall(failingPersistenceHost, {
+    type: "tool_call",
+    toolCallId: "persistence-blocked",
+    toolName: "solar_revisit",
+    input: {},
+  }, [{ type: "tool_call", toolCallId: "persistence-sibling", toolName: "read", input: { path: "input.txt" } }]);
+  assert.equal(persistenceBlocked.outcome.block, true);
+  assert.equal(persistenceBlocked.outcome.terminate, true);
+  assert.match(persistenceBlocked.outcome.reason, /must be the only tool call/u);
+  assert.equal(nativeAttempts, 3);
+
+  const missingStateHost = (await reviewedExecution(workspace)).pi;
+  const currentState = [...missingStateHost.entries].reverse().find(entry => entry.type === "custom" && entry.customType === WORKFLOW_STATE);
+  assert.ok(currentState);
+  delete currentState.id;
+  const executionCall = {
+    type: "tool_call",
+    toolCallId: "missing-state",
+    toolName: "write",
+    input: { path: "result.txt", content: "still authorized by the unchanged runtime guard" },
+  };
+  assert.equal((await emitRetainedToolCall(missingStateHost, executionCall)).outcome, undefined);
+  assert.equal(nativeToolAuthorityEntries(missingStateHost, "dispatch").some(entry => entry.data.call.toolCallId === executionCall.toolCallId), false);
+  assert.match(missingStateHost.notifications.at(-1).message, /could not bind.*audit coverage is incomplete/iu);
+  assert.equal(await missingStateHost.emit("tool_result", {
+    type: "tool_result",
+    toolCallId: executionCall.toolCallId,
+    toolName: executionCall.toolName,
+    input: executionCall.input,
+    content: [{ type: "text", text: "ordinary native result" }],
+    details: undefined,
+    isError: false,
+  }), undefined);
+  assert.ok(nativeToolAuthorityEntries(missingStateHost, "result").some(entry =>
+    entry.data.call.toolCallId === executionCall.toolCallId
+    && entry.data.decision === "current"));
+  const resultCount = nativeToolAuthorityEntries(missingStateHost, "result").length;
+  const orphan = await missingStateHost.emit("tool_result", {
+    type: "tool_result",
+    toolCallId: "missing-result-origin",
+    toolName: "write",
+    input: { path: "result.txt" },
+    content: [{ type: "text", text: "unattributed native result" }],
+    details: undefined,
+    isError: false,
+  });
+  assert.equal(orphan.isError, true);
+  assert.equal(orphan.details.staleExecutionResult, true);
+  assert.equal(nativeToolAuthorityEntries(missingStateHost, "result").length, resultCount);
+  assert.match(missingStateHost.notifications.at(-1).message, /could not attribute.*audit coverage is incomplete/iu);
+}));
+
 test("the harness grader accepts a real command-only controller completion digest", async () => fixture(async workspace => {
   const caseName = "execute-summary";
   const harnessFixture = getHarnessFixture(caseName);
@@ -2638,11 +3186,30 @@ test("the harness grader accepts a real command-only controller completion diges
     approval: null,
     approvalBoundaryEventIndex: null,
   };
-  const { reconcileHostApproval } = await import("../scripts/harness-experiment.mjs");
+  const { auditNativeToolAuthority, reconcileHostApproval } = await import("../scripts/harness-experiment.mjs");
   reconcileHostApproval(approvalFlow, {
     since: entryWatermark,
     entries: pi.entries.slice(grantEntryIndex),
     leafId: pi.entries.at(-1).id,
+  });
+  const authorityEntries = [{
+    id: "authority-coverage",
+    parentId: null,
+    timestamp: "2026-09-14T22:00:00.000Z",
+    type: "custom",
+    customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+    data: {
+      version: 1,
+      kind: "coverage",
+      scope: "main_session_native_tool_hooks",
+      dispatch: "every_call",
+      result: "every_execution_allowed_call",
+    },
+  }];
+  const nativeToolAuthorityAudit = auditNativeToolAuthority([], {
+    entries: authorityEntries,
+    leafId: authorityEntries[0].id,
+    finalCaptureComplete: true,
   });
   const grade = gradeHarnessResult(caseName, {
     preflight: { passed: true },
@@ -2662,10 +3229,11 @@ test("the harness grader accepts a real command-only controller completion diges
     beforeFiles,
     afterFiles,
     outputContents: { [outputPath]: rawOutput },
-    operationAudit: { approvalEventIndex: approvalFlow.approvalBoundaryEventIndex, unauthorized: [], preApprovalMutations: [] },
+    fixturePolicyAudit: { scope: "fixture_policy", calls: [], violations: [], approvalEventIndex: approvalFlow.approvalBoundaryEventIndex, preApprovalMutations: [] },
     planContract: structuredClone(workflow.plan.contract),
     approvalEligibility,
     approval: approvalFlow.approval,
+    nativeToolAuthorityAudit,
   });
   const approvalAssertion = grade.assertions.find(item => item.id === "synthetic_plan_was_safely_approved");
   const completion = grade.assertions.find(item => item.id === "command_only_workflow_completed");

@@ -21,6 +21,7 @@ import {
   executionExpectation,
   finishVerification,
   initializeLoop,
+  NATIVE_TOOL_AUTHORITY_ENTRY,
   nextStep,
   recordPlanReview,
   recordStep,
@@ -35,6 +36,7 @@ import {
   validateCurrentPlanReview,
   validateExecutionPlan,
   validateFindingResolutions,
+  validateNativeToolAuthorityReceipt,
   validatePlanReview,
   validateRoleContextBundle,
   validateSolarRoleRequest,
@@ -294,6 +296,90 @@ function checkpointAll(workflow) {
   }
   return current;
 }
+
+test("native tool authority receipts use one strict, required, non-normalizing wire", () => {
+  assert.equal(NATIVE_TOOL_AUTHORITY_ENTRY, "solar-native-tool-authority-v1");
+  const call = Object.freeze({ assistantEntryId: "assistant-é", toolCallId: "call-1", toolName: "write" });
+  const coverage = Object.freeze({
+    version: 1,
+    kind: "coverage",
+    scope: "main_session_native_tool_hooks",
+    dispatch: "every_call",
+    result: "every_execution_allowed_call",
+  });
+  const execution = Object.freeze({
+    version: 1,
+    kind: "dispatch",
+    call,
+    stateEntryId: "state-1",
+    stepId: "STEP1",
+    decision: "execution_allowed",
+    code: null,
+  });
+  const current = Object.freeze({ version: 1, kind: "result", call, decision: "current", code: null });
+  for (const receipt of [coverage, execution, current]) {
+    const before = structuredClone(receipt);
+    assert.equal(validateNativeToolAuthorityReceipt(receipt), receipt);
+    assert.deepEqual(receipt, before);
+  }
+
+  for (const code of [
+    "duplicate_call",
+    "mixed_control_batch",
+    "interview_budget",
+    "interview_read_denied",
+    "waiting_boundary",
+    "model_identity",
+    "stage_tool_denied",
+    "execution_guard_rejected",
+  ]) {
+    const receipt = { version: 1, kind: "dispatch", call, stateEntryId: null, stepId: null, decision: "blocked", code };
+    assert.equal(validateNativeToolAuthorityReceipt(receipt), receipt);
+  }
+  for (const code of [
+    "authority_recheck_failed",
+    "authorization_already_invalidated",
+    "duplicate_result",
+    "unknown_authorization",
+  ]) {
+    const receipt = { version: 1, kind: "result", call, decision: "invalidated", code };
+    assert.equal(validateNativeToolAuthorityReceipt(receipt), receipt);
+  }
+  const dispatchAllowed = { version: 1, kind: "dispatch", call, stateEntryId: null, stepId: null, decision: "dispatch_allowed", code: null };
+  assert.equal(validateNativeToolAuthorityReceipt(dispatchAllowed), dispatchAllowed);
+
+  const invalid = [
+    null,
+    {},
+    { ...coverage, version: 2 },
+    { version: 1, kind: "coverage", scope: coverage.scope, dispatch: coverage.dispatch },
+    { ...coverage, extra: true },
+    { version: 1, kind: "dispatch", call, stateEntryId: null, stepId: null, decision: "dispatch_allowed" },
+    { ...dispatchAllowed, call: { toolCallId: "call-1", toolName: "write" } },
+    { ...dispatchAllowed, call: { ...call, extra: true } },
+    { ...dispatchAllowed, call: { ...call, assistantEntryId: "" } },
+    { ...dispatchAllowed, call: { ...call, toolCallId: " call-1" } },
+    { ...dispatchAllowed, call: { ...call, toolName: "write\n" } },
+    { ...dispatchAllowed, stateEntryId: "state 1" },
+    { ...dispatchAllowed, stepId: "\u0000" },
+    { ...dispatchAllowed, code: "stage_tool_denied" },
+    { ...dispatchAllowed, decision: "blocked", code: null },
+    { ...dispatchAllowed, decision: "blocked", code: "unknown_block" },
+    { ...execution, stateEntryId: null },
+    { ...execution, stepId: null },
+    { ...execution, stepId: "" },
+    { ...execution, code: "execution_guard_rejected" },
+    { ...execution, extra: true },
+    { version: 1, kind: "result", call, decision: "current" },
+    { ...current, code: "duplicate_result" },
+    { ...current, decision: "invalidated", code: null },
+    { ...current, decision: "invalidated", code: "execution_guard_rejected" },
+    { ...current, decision: "unknown" },
+    { ...current, extra: true },
+    { ...current, kind: "unknown" },
+  ];
+  for (const receipt of invalid) assert.throws(() => validateNativeToolAuthorityReceipt(receipt));
+});
 
 test("ExecutionContractV3 requires artifacts, capabilities, gates, and complete self-checks", () => {
   assert.throws(() => validateExecutionPlan("# Plan\n## Execution contract\nDescribe work in prose."), /fenced json ExecutionContractV3/);

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { prepareReloadFixture } from "./reload-fixture.mjs";
 import { recoverWorkflow } from "../runtime/workflow.ts";
 import { renderHarnessRolePrompt } from "../runtime/harness.ts";
+import { NATIVE_TOOL_AUTHORITY_ENTRY, validateNativeToolAuthorityReceipt } from "../runtime/loop.ts";
 import { buildPlannerResponseSchema } from "../runtime/planner-output.ts";
 
 const TEST_PREFIX = "pi-solar-smoke-";
@@ -21,6 +22,7 @@ const GENERIC_MODEL = "mock-medium";
 const PRIVATE_READ_SCENARIO = "installed-private-read-boundary-6f31";
 const PRIVATE_READ_SENTINEL = "SYNTHETIC_PRIVATE_READ_SENTINEL_NOT_A_SECRET_9c72";
 const POSITIVE_READ_SENTINEL = "AUTHORIZED_APPLICATION_SESSION_JSONL_EVIDENCE_1a46";
+const TOOL_ERROR_OFFSET = 1_000_000;
 const SUMMARY_OUTPUT = {
   groups: [
     { category: "alpha", count: 2, total: 3 },
@@ -38,7 +40,8 @@ const EXECUTE_SUMMARY_ASSERTIONS = [
   "fixture_inputs_unchanged",
   "unexpected_workspace_files_absent",
   "workspace_contains_no_special_files",
-  "unauthorized_tool_attempts_absent",
+  "fixture_policy_tool_attempts_within_bounds",
+  "native_tool_authority_clean",
   "full_interview_exact_confirmation",
   "confirmed_goal_matches_fixture_semantics",
   "current_revision_has_all_role_receipts",
@@ -123,7 +126,8 @@ function runCli(cliPath, arguments_, options) {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       clearTimeout(timer);
-      if (code === 0) resolve({ stdout, stderr });
+      const acceptedExitCodes = options.acceptExitCodes ?? [0];
+      if (code !== null && acceptedExitCodes.includes(code)) resolve({ stdout, stderr, exitCode: code, signal });
       else reject(new Error(`pi ${arguments_[0]} exited with ${code ?? signal}\n${stderr || stdout}`));
     });
   });
@@ -403,12 +407,27 @@ function randomId() {
 async function startBackend(readAliases) {
   const requests = [];
   const errors = [];
-  const executeSummary = {
-    started: false,
-    interviewActions: [],
-    planningActions: [],
-    roleRequests: [],
-    executorActions: [],
+  let activeExecuteSummary;
+  const beginExecuteSummary = kind => {
+    assert.ok(["positive", "blocked-output-read", "authorized-tool-error"].includes(kind), `Unknown execute-summary loopback scenario: ${kind}`);
+    assert.equal(activeExecuteSummary, undefined, "The previous execute-summary loopback scenario is still active");
+    const scenario = {
+      kind,
+      started: false,
+      requestStart: requests.length,
+      requestEnd: null,
+      interviewActions: [],
+      planningActions: [],
+      roleRequests: [],
+      executorActions: [],
+    };
+    activeExecuteSummary = scenario;
+    return scenario;
+  };
+  const finishExecuteSummary = scenario => {
+    assert.equal(activeExecuteSummary, scenario, "Finished a non-current execute-summary loopback scenario");
+    scenario.requestEnd = requests.length;
+    activeExecuteSummary = undefined;
   };
   const interviewReads = {
     step: 0,
@@ -440,12 +459,18 @@ async function startBackend(readAliases) {
         assert.equal(payload.reasoning_effort, "max");
         assert.ok(!ANSI_PATTERN.test(JSON.stringify(payload)), "ANSI escape reached a model request");
         const requestText = textValues(payload.messages).join("\n");
-        if (requestText.includes("input.json") && requestText.includes("summary.json") && requestText.includes("node evaluator.mjs")) executeSummary.started = true;
-        const summaryRequest = executeSummary.started;
+        if (activeExecuteSummary
+          && requestText.includes("input.json")
+          && requestText.includes("summary.json")
+          && requestText.includes("node evaluator.mjs")) {
+          activeExecuteSummary.started = true;
+        }
+        const executeSummary = activeExecuteSummary?.started ? activeExecuteSummary : undefined;
+        const summaryRequest = Boolean(executeSummary);
 
         const role = parseRoleMetadata(payload);
         if (role) {
-          if (summaryRequest) executeSummary.roleRequests.push(role.role);
+          if (executeSummary) executeSummary.roleRequests.push(role.role);
           assert.ok(textValues(payload.messages.filter(message => message.role === "system")).join("\n").includes(renderHarnessRolePrompt(role.role)), `Installed planning session omitted the complete ${role.role} agent/skill`);
           assert.ok(!payload.tools || payload.tools.length === 0, "Isolated planning roles must be tool-free");
           assert.equal(payload.reasoning_effort, "max", "Isolated planning roles must retain Solar Max at the provider boundary");
@@ -534,25 +559,48 @@ async function startBackend(readAliases) {
           }
         } else if (names.has("solar_research_ready")) streamResponse(response, SOLAR_MODEL, { tool: "solar_research_ready", arguments: researchSubmission(payload) });
         else if (names.has("solar_plan_ready")) {
-          if (summaryRequest) executeSummary.planningActions.push("solar_plan_ready");
+          if (executeSummary) executeSummary.planningActions.push("solar_plan_ready");
           streamResponse(response, SOLAR_MODEL, { tool: "solar_plan_ready", arguments: {} });
         } else if (summaryRequest && names.has("solar_step_done")) {
           const system = textValues(payload.messages.filter(message => message.role === "system")).join("\n");
           assert.equal(system.split("<solar-workflow-main-instructions-v1>").length - 1, 1, "Installed main session duplicated or omitted the owned executor instruction frame");
           assert.ok(system.includes(renderHarnessRolePrompt("executor")), "Installed main session omitted the complete executor agent/skill");
-          if (executeSummary.executorActions.length === 0) {
+          if (executeSummary.kind === "blocked-output-read") {
+            if (executeSummary.executorActions.length === 0) {
+              assert.ok(names.has("read"), "Approved execute-summary step omitted the read tool needed for the controlled authority denial");
+              executeSummary.executorActions.push("read:summary.json:blocked");
+              streamResponse(response, SOLAR_MODEL, { tool: "read", arguments: { path: "summary.json" } });
+            } else {
+              assert.equal(executeSummary.executorActions.length, 1, "The controlled denial exceeded the existing single checkpoint reminder");
+              assert.match(requestText, /Model prose is never a checkpoint or completion/u);
+              executeSummary.executorActions.push("stop:after-checkpoint-reminder");
+              streamResponse(response, SOLAR_MODEL, { text: "The read was blocked. I am not claiming a checkpoint or completion." });
+            }
+            return;
+          }
+          if (executeSummary.kind === "authorized-tool-error" && executeSummary.executorActions.length === 0) {
+            assert.ok(names.has("read"), "Approved execute-summary step omitted its declared read capability");
+            executeSummary.executorActions.push("read:input.json:error-offset");
+            streamResponse(response, SOLAR_MODEL, { tool: "read", arguments: { path: "input.json", offset: TOOL_ERROR_OFFSET } });
+            return;
+          }
+          const normalActionIndex = executeSummary.executorActions.length - (executeSummary.kind === "authorized-tool-error" ? 1 : 0);
+          if (executeSummary.kind === "authorized-tool-error" && normalActionIndex === 0) {
+            assert.match(requestText, new RegExp(`Offset ${TOOL_ERROR_OFFSET} is beyond end of file`), "The ordinary authorized read error was not preserved for the next model turn");
+          }
+          if (normalActionIndex === 0) {
             assert.ok(names.has("read"), "Approved execute-summary step omitted its declared read capability");
             executeSummary.executorActions.push("read:input.json");
             streamResponse(response, SOLAR_MODEL, { tool: "read", arguments: { path: "input.json" } });
-          } else if (executeSummary.executorActions.length === 1) {
+          } else if (normalActionIndex === 1) {
             assert.ok(names.has("read"), "Approved execute-summary step lost its declared read capability");
             executeSummary.executorActions.push("read:evaluator.mjs");
             streamResponse(response, SOLAR_MODEL, { tool: "read", arguments: { path: "evaluator.mjs" } });
-          } else if (executeSummary.executorActions.length === 2) {
+          } else if (normalActionIndex === 2) {
             assert.ok(names.has("write"), "Approved execute-summary step omitted its declared write capability");
             executeSummary.executorActions.push("write:summary.json");
             streamResponse(response, SOLAR_MODEL, { tool: "write", arguments: { path: "summary.json", content: `${JSON.stringify(SUMMARY_OUTPUT, null, 2)}\n` } });
-          } else if (executeSummary.executorActions.length === 3) {
+          } else if (normalActionIndex === 3) {
             executeSummary.executorActions.push("solar_step_done:S1");
             streamResponse(response, SOLAR_MODEL, {
               tool: "solar_step_done",
@@ -563,7 +611,7 @@ async function startBackend(readAliases) {
                 evidence: ["summary.json"],
               },
             });
-          } else if (executeSummary.executorActions.length === 4) {
+          } else if (normalActionIndex === 4) {
             assert.equal(names.has("read") || names.has("write"), false, "Completed steps retained mutation or read tools at the final boundary");
             executeSummary.executorActions.push("solar_step_done:final");
             streamResponse(response, SOLAR_MODEL, {
@@ -597,7 +645,8 @@ async function startBackend(readAliases) {
     requests,
     errors,
     interviewReads,
-    executeSummary,
+    beginExecuteSummary,
+    finishExecuteSummary,
     port: server.address().port,
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
   };
@@ -747,6 +796,174 @@ function readJsonLines(filename) {
     .map(line => JSON.parse(line));
 }
 
+function callKey(call) {
+  return JSON.stringify([call.assistantEntryId, call.toolCallId, call.toolName]);
+}
+
+function retainedAssistantCalls(entries) {
+  const calls = [];
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+    const entry = entries[entryIndex];
+    if (entry?.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
+    for (const block of entry.message.content) {
+      if (block?.type === "toolCall") calls.push({ entry, entryIndex, block });
+    }
+  }
+  return calls;
+}
+
+function retainedToolResults(entries) {
+  return entries.flatMap((entry, entryIndex) =>
+    entry?.type === "message" && entry.message?.role === "toolResult"
+      ? [{ entry, entryIndex, message: entry.message }]
+      : []);
+}
+
+function retainedAuthorityReceipts(entries) {
+  return entries.flatMap((entry, entryIndex) =>
+    entry?.type === "custom" && entry.customType === NATIVE_TOOL_AUTHORITY_ENTRY
+      ? [{ entry, entryIndex, data: validateNativeToolAuthorityReceipt(entry.data) }]
+      : []);
+}
+
+function assertNativeAuthorityCapture({ result, entries, events, backend, scenario, blockedCodes = [] }) {
+  const audit = result.nativeToolAuthorityAudit;
+  assert.deepEqual(Object.keys(audit).sort(), [
+    "blockedDispatches",
+    "capturedLeafId",
+    "counts",
+    "coverage",
+    "declarationEntryId",
+    "denialCount",
+    "invalidationCount",
+    "invalidatedResults",
+    "issues",
+  ].sort());
+  assert.equal(audit.coverage, "complete");
+  assert.deepEqual(audit.issues, []);
+  assert.deepEqual(audit.invalidatedResults, []);
+  assert.equal(audit.denialCount, blockedCodes.length);
+  assert.equal(audit.invalidationCount, 0);
+  assert.deepEqual(audit.blockedDispatches.map(item => item.code), blockedCodes);
+
+  const entryIds = entries.map(entry => entry.id);
+  assert.ok(entryIds.every(id => typeof id === "string" && id.length > 0), "Installed Pi returned an entry without a real ID");
+  assert.equal(new Set(entryIds).size, entryIds.length, "Installed Pi returned duplicate session entry IDs");
+  for (let index = 1; index < entries.length; index += 1) {
+    assert.equal(entries[index].parentId, entries[index - 1].id, `Installed Pi returned a non-linear captured branch at ${entries[index].id}`);
+  }
+  assert.equal(audit.capturedLeafId, entries.at(-1)?.id ?? null, "The authority audit did not bind the complete retained leaf");
+
+  const receipts = retainedAuthorityReceipts(entries);
+  const coverageReceipts = receipts.filter(item => item.data.kind === "coverage");
+  const dispatchReceipts = receipts.filter(item => item.data.kind === "dispatch");
+  const resultReceipts = receipts.filter(item => item.data.kind === "result");
+  const assistantCalls = retainedAssistantCalls(entries);
+  const toolResults = retainedToolResults(entries);
+  const starts = events.filter(event => event?.type === "tool_execution_start");
+  const ends = events.filter(event => event?.type === "tool_execution_end");
+  const requiredResults = dispatchReceipts.filter(item => item.data.decision === "execution_allowed");
+
+  assert.equal(events.some(event => event?.type === "auto_retry_start"), false, "The deterministic native-authority scenarios must not add a provider retry");
+  assert.equal(coverageReceipts.length, 1, "Fresh installed-Pi session must retain exactly one native authority coverage declaration");
+  assert.equal(coverageReceipts[0].entry.id, audit.declarationEntryId);
+  assert.ok(assistantCalls.every(call => coverageReceipts[0].entryIndex < call.entryIndex), "Native authority coverage was declared after a covered assistant call");
+  assert.deepEqual(audit.counts, {
+    calls: assistantCalls.length,
+    starts: starts.length,
+    ends: ends.length,
+    toolResults: toolResults.length,
+    dispatches: dispatchReceipts.length,
+    requiredResults: requiredResults.length,
+    resultDecisions: resultReceipts.length,
+  });
+  assert.equal(dispatchReceipts.length, assistantCalls.length, "Every retained assistant tool call needs one dispatch receipt");
+  assert.equal(starts.length, assistantCalls.length, "Installed Pi tool-start cardinality drifted from retained assistant calls");
+  assert.equal(ends.length, assistantCalls.length, "Installed Pi tool-end cardinality drifted from retained assistant calls");
+  assert.equal(toolResults.length, assistantCalls.length, "Installed Pi native result cardinality drifted from retained assistant calls");
+  assert.equal(resultReceipts.length, requiredResults.length, "Every execution allowance needs one result-authority decision");
+
+  const dispatchesByCall = new Map();
+  for (const receipt of dispatchReceipts) {
+    const key = callKey(receipt.data.call);
+    const matches = dispatchesByCall.get(key) ?? [];
+    matches.push(receipt);
+    dispatchesByCall.set(key, matches);
+  }
+  const resultsByCall = new Map();
+  for (const receipt of resultReceipts) {
+    const key = callKey(receipt.data.call);
+    const matches = resultsByCall.get(key) ?? [];
+    matches.push(receipt);
+    resultsByCall.set(key, matches);
+  }
+
+  for (const assistantCall of assistantCalls) {
+    const call = {
+      assistantEntryId: assistantCall.entry.id,
+      toolCallId: assistantCall.block.id,
+      toolName: assistantCall.block.name,
+    };
+    const key = callKey(call);
+    const matchingDispatches = dispatchesByCall.get(key) ?? [];
+    assert.equal(matchingDispatches.length, 1, `Assistant call ${assistantCall.block.id} did not have one exact native dispatch join`);
+    const dispatch = matchingDispatches[0];
+    assert.deepEqual(dispatch.data.call, call);
+    assert.ok(dispatch.entryIndex > assistantCall.entryIndex, `Dispatch receipt for ${assistantCall.block.id} did not follow its real assistant origin`);
+    if (dispatch.data.stateEntryId !== null) {
+      const stateIndex = entryIds.indexOf(dispatch.data.stateEntryId);
+      assert.ok(stateIndex >= 0 && stateIndex < dispatch.entryIndex, `Dispatch receipt for ${assistantCall.block.id} did not reference a preceding retained state`);
+      assert.equal(entries[stateIndex].type, "custom");
+      assert.equal(entries[stateIndex].customType, "solar-workflow-state-v1");
+    }
+    if (dispatch.data.decision === "execution_allowed") {
+      assert.equal(typeof dispatch.data.stepId, "string");
+      assert.ok(dispatch.data.stepId.length > 0);
+    }
+
+    const matchingStarts = starts.filter(event => event.toolCallId === call.toolCallId && event.toolName === call.toolName);
+    const matchingEnds = ends.filter(event => event.toolCallId === call.toolCallId && event.toolName === call.toolName);
+    const matchingToolResults = toolResults.filter(item => item.message.toolCallId === call.toolCallId && item.message.toolName === call.toolName);
+    assert.equal(matchingStarts.length, 1, `Assistant call ${assistantCall.block.id} did not have one exact native start`);
+    assert.equal(matchingEnds.length, 1, `Assistant call ${assistantCall.block.id} did not have one exact native end`);
+    assert.equal(matchingToolResults.length, 1, `Assistant call ${assistantCall.block.id} did not have one exact native result`);
+    assert.ok(events.indexOf(matchingStarts[0]) < events.indexOf(matchingEnds[0]), `Native end for ${assistantCall.block.id} did not follow its start`);
+    assert.ok(matchingToolResults[0].entryIndex > dispatch.entryIndex, `Native result for ${assistantCall.block.id} did not follow its dispatch receipt`);
+
+    const matchingResults = resultsByCall.get(key) ?? [];
+    if (dispatch.data.decision === "execution_allowed") {
+      assert.equal(matchingResults.length, 1, `Execution call ${assistantCall.block.id} did not have one exact result-authority decision`);
+      assert.ok(matchingResults[0].entryIndex > dispatch.entryIndex, `Result decision for ${assistantCall.block.id} did not follow execution allowance`);
+      assert.ok(matchingResults[0].entryIndex < matchingToolResults[0].entryIndex, `Native result for ${assistantCall.block.id} preceded its authority recheck`);
+    } else {
+      assert.equal(matchingResults.length, 0, `Non-execution call ${assistantCall.block.id} received an invented execution-result decision`);
+    }
+  }
+
+  assert.ok(Number.isInteger(scenario.requestStart) && Number.isInteger(scenario.requestEnd));
+  const providerRequests = backend.requests.slice(scenario.requestStart, scenario.requestEnd);
+  const serializedMessages = providerRequests.map(payload => JSON.stringify(payload.messages ?? []));
+  for (const marker of [
+    NATIVE_TOOL_AUTHORITY_ENTRY,
+    "main_session_native_tool_hooks",
+    "every_execution_allowed_call",
+    ...blockedCodes,
+  ]) {
+    assert.ok(serializedMessages.every(messages => !messages.includes(marker)), `Native authority marker ${marker} became model-visible`);
+  }
+  for (const receipt of receipts) {
+    assert.ok(serializedMessages.every(messages => !messages.includes(receipt.entry.id)), `Native authority entry ${receipt.entry.id} became model-visible`);
+  }
+  const retainedAssistantMessages = entries.filter(entry => entry?.type === "message" && entry.message?.role === "assistant");
+  const mainProviderRequests = providerRequests.filter(payload => !parseRoleMetadata(payload));
+  assert.equal(providerRequests.length, scenario.interviewActions.length + scenario.planningActions.length + scenario.roleRequests.length + scenario.executorActions.length, "The loopback observed an unscripted provider request");
+  assert.equal(mainProviderRequests.length, scenario.interviewActions.length + scenario.planningActions.length + scenario.executorActions.length, "The loopback observed an unscripted main-session turn");
+  assert.equal(retainedAssistantMessages.length, mainProviderRequests.length, "Native audit entries changed the observable main-session turn count");
+  assert.equal(result.metrics.mainSessionAssistantCallsObserved, retainedAssistantMessages.length);
+
+  return { assistantCalls, dispatchReceipts, resultReceipts, toolResults, starts, ends };
+}
+
 function assertPassingEvaluatorGate(result, label) {
   assert.equal(result?.id, "G1", `${label} omitted the exact evaluator gate`);
   assert.equal(result.kind, "command");
@@ -760,7 +977,7 @@ function assertPassingEvaluatorGate(result, label) {
   assert.deepEqual(result.files.map(file => file.artifactId), ["A1"]);
 }
 
-function assertExecuteSummaryRun({ backend, cliPath, output, runnerArguments, runnerReceipt }) {
+function assertExecuteSummaryRun({ backend, scenario, cliPath, output, runnerArguments, runnerReceipt }) {
   const manifestPath = path.join(output, "experiment.json");
   const resultPath = path.join(output, "run-001", "result.json");
   const entriesPath = path.join(output, "run-001", "session-entries.json");
@@ -771,6 +988,7 @@ function assertExecuteSummaryRun({ backend, cliPath, output, runnerArguments, ru
   const result = JSON.parse(readFileSync(resultPath, "utf8"));
   const runnerSummary = JSON.parse(runnerReceipt.stdout);
 
+  assert.equal(runnerReceipt.exitCode, 0);
   assert.equal(runnerSummary.status, "completed");
   assert.equal(runnerSummary.case, "execute-summary");
   assert.equal(runnerSummary.runs.length, 1);
@@ -795,7 +1013,7 @@ function assertExecuteSummaryRun({ backend, cliPath, output, runnerArguments, ru
   assert.ok(piArguments.includes("--thinking") && piArguments.includes("max"));
   assert.ok(piArguments.includes("--no-approve"), "The runner must exercise an explicit host approval command, not Pi auto-approval");
   assert.deepEqual(result.assertions.map(item => item.id), EXECUTE_SUMMARY_ASSERTIONS);
-  assert.equal(result.assertions.length, 16);
+  assert.equal(result.assertions.length, 17);
   assert.ok(result.assertions.every(item => item.passed === true), JSON.stringify(result.assertions.filter(item => !item.passed)));
 
   const approvalAssertion = result.assertions.find(item => item.id === "synthetic_plan_was_safely_approved");
@@ -837,9 +1055,15 @@ function assertExecuteSummaryRun({ backend, cliPath, output, runnerArguments, ru
   assert.notEqual(grant.observedLeafId, grant.entryId);
   assert.equal(grant.stage, "execute");
   assert.equal(grant.status, "active");
-  assert.equal(result.operationAudit.approvalEventIndex, request.eventIndex);
+  assert.equal(Object.hasOwn(result, "operationAudit"), false, "The removed mixed-authority audit alias must not reappear");
+  assert.equal(result.fixturePolicyAudit.scope, "fixture_policy");
+  assert.equal(result.fixturePolicyAudit.approvalEventIndex, request.eventIndex);
+  assert.deepEqual(result.fixturePolicyAudit.violations, []);
+  assert.ok(result.fixturePolicyAudit.calls.every(call =>
+    Object.hasOwn(call, "allowedByFixturePolicy") && !Object.hasOwn(call, "authorized")));
   assert.ok(Number.isInteger(request.eventIndex) && request.eventIndex >= 0);
-  assert.deepEqual(result.operationAudit.preApprovalMutations, []);
+  assert.deepEqual(result.fixturePolicyAudit.calls.filter(call =>
+    call.phase === "before_approval" && ["write", "edit", "bash", "powershell"].includes(call.tool)), []);
 
   const entries = JSON.parse(readFileSync(entriesPath, "utf8"));
   const entryIds = entries.map(entry => entry.id);
@@ -885,11 +1109,11 @@ function assertExecuteSummaryRun({ backend, cliPath, output, runnerArguments, ru
     assert.ok(entryIds.indexOf(entry.id) > watermarkIndex, `Post-cursor page repeated or preceded its watermark at ${entry.id}`);
   }
 
-  const writeOperations = result.operationAudit.operations.filter(operation => operation.tool === "write" && operation.path === "summary.json");
+  const writeOperations = result.fixturePolicyAudit.calls.filter(operation => operation.tool === "write" && operation.path === "summary.json");
   assert.equal(writeOperations.length, 1, "The installed executor must issue one real summary.json write");
-  assert.equal(writeOperations[0].authorized, true);
+  assert.equal(writeOperations[0].allowedByFixturePolicy, true);
   assert.equal(writeOperations[0].phase, "after_approval");
-  assert.ok(writeOperations[0].eventIndex >= request.eventIndex, "The effective operation-audit boundary did not match the dispatched approval");
+  assert.ok(writeOperations[0].eventIndex >= request.eventIndex, "The effective fixture-policy boundary did not match the dispatched approval");
   const retainedEvents = readJsonLines(eventsPath);
   assert.equal(retainedEvents[writeOperations[0].eventIndex].type, "tool_execution_start");
   assert.equal(retainedEvents[writeOperations[0].eventIndex].toolName, "write");
@@ -925,18 +1149,174 @@ function assertExecuteSummaryRun({ backend, cliPath, output, runnerArguments, ru
   assert.equal(finalReceipt.hash, sha256(outputText));
   assert.equal(finalReceipt.bytes, Buffer.byteLength(outputText, "utf8"));
 
-  assert.deepEqual(backend.executeSummary.interviewActions, ["read:input.json", "solar_interview_round:ready"]);
-  assert.deepEqual(backend.executeSummary.planningActions, ["solar_plan_ready"]);
-  assert.deepEqual(backend.executeSummary.roleRequests, ["planner", "approach_reviewer", "critic"]);
-  assert.deepEqual(backend.executeSummary.executorActions, [
-    "read:input.json",
-    "read:evaluator.mjs",
-    "write:summary.json",
-    "solar_step_done:S1",
-    "solar_step_done:final",
-  ]);
+  assertNativeAuthorityCapture({ result, entries, events: retainedEvents, backend, scenario });
+  assert.deepEqual(scenario.interviewActions, ["read:input.json", "solar_interview_round:ready"]);
+  assert.deepEqual(scenario.planningActions, ["solar_plan_ready"]);
+  assert.deepEqual(scenario.roleRequests, ["planner", "approach_reviewer", "critic"]);
+  const expectedExecutorActions = scenario.kind === "authorized-tool-error"
+    ? ["read:input.json:error-offset", "read:input.json", "read:evaluator.mjs", "write:summary.json", "solar_step_done:S1", "solar_step_done:final"]
+    : ["read:input.json", "read:evaluator.mjs", "write:summary.json", "solar_step_done:S1", "solar_step_done:final"];
+  assert.deepEqual(scenario.executorActions, expectedExecutorActions);
   assert.equal(backend.errors.length, 0, backend.errors.map(String).join("\n"));
   assert.ok(backend.requests.every(payload => payload.model === SOLAR_MODEL && payload.reasoning_effort === "max"));
+  return { result, entries, events: retainedEvents };
+}
+
+function assertBlockedOutputReadRun({ backend, scenario, output, runnerReceipt }) {
+  const manifest = JSON.parse(readFileSync(path.join(output, "experiment.json"), "utf8"));
+  const result = JSON.parse(readFileSync(path.join(output, "run-001", "result.json"), "utf8"));
+  const entries = JSON.parse(readFileSync(path.join(output, "run-001", "session-entries.json"), "utf8"));
+  const events = readJsonLines(path.join(output, "run-001", "pi-events.jsonl"));
+  const runnerSummary = JSON.parse(runnerReceipt.stdout);
+
+  assert.equal(runnerReceipt.exitCode, 1, "The controlled native-authority denial must keep the harness run unsuccessful");
+  assert.equal(runnerSummary.status, "blocked");
+  assert.equal(runnerSummary.runs[0].status, "blocked");
+  assert.equal(manifest.status, "blocked");
+  assert.equal(manifest.case, "execute-summary");
+  assert.equal(manifest.runs[0].status, "blocked");
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "paused");
+  assert.equal(result.case, "execute-summary");
+  assert.equal(result.heldOut, false, "The controlled denial proof must remain confined to the development fixture");
+  assert.deepEqual(result.assertions.map(item => item.id), EXECUTE_SUMMARY_ASSERTIONS);
+  assert.equal(result.assertions.length, 17);
+  for (const assertionId of [
+    "preflight_model_and_resources",
+    "pi_process_exited_cleanly",
+    "provider_failures_absent",
+    "extension_errors_absent",
+    "fixture_inputs_unchanged",
+    "unexpected_workspace_files_absent",
+    "workspace_contains_no_special_files",
+    "full_interview_exact_confirmation",
+    "confirmed_goal_matches_fixture_semantics",
+    "current_revision_has_all_role_receipts",
+    "synthetic_plan_was_safely_approved",
+    "no_mutation_before_exact_approval",
+  ]) {
+    assert.equal(result.assertions.find(item => item.id === assertionId)?.passed, true, `Controlled denial unexpectedly failed ${assertionId}`);
+  }
+  assert.equal(result.assertions.find(item => item.id === "fixture_policy_tool_attempts_within_bounds")?.passed, true);
+  assert.equal(result.assertions.find(item => item.id === "native_tool_authority_clean")?.passed, false);
+  assert.deepEqual(result.assertions.filter(item => !item.passed).map(item => item.id), [
+    "native_tool_authority_clean",
+    "command_only_workflow_completed",
+    "output_is_valid_json",
+    "output_matches_independent_expected_value",
+  ]);
+  assert.equal(result.process.exitCode, 0, "The failed grader scenario must not masquerade as a Pi process failure");
+  assert.equal(result.error, null);
+  assert.equal(result.protocolError, null);
+  assert.deepEqual(result.providerFailures, []);
+  assert.equal(Object.hasOwn(result, "operationAudit"), false, "The removed mixed-authority audit alias must not reappear");
+  assert.equal(result.fixturePolicyAudit.scope, "fixture_policy");
+  assert.deepEqual(result.fixturePolicyAudit.violations, []);
+  assert.ok(result.fixturePolicyAudit.calls.every(call =>
+    Object.hasOwn(call, "allowedByFixturePolicy") && !Object.hasOwn(call, "authorized")));
+
+  const fixtureCalls = result.fixturePolicyAudit.calls.filter(call =>
+    call.tool === "read" && call.path === "summary.json");
+  assert.equal(fixtureCalls.length, 1, "The controlled output read was not retained by fixture-policy measurement");
+  assert.equal(fixtureCalls[0].phase, "after_approval");
+  assert.equal(fixtureCalls[0].allowedByFixturePolicy, true, "Fixture containment must remain distinct from current-step host authority");
+  assert.equal(fixtureCalls[0].reason, "fixture_local_read");
+  assert.equal(events[fixtureCalls[0].eventIndex].type, "tool_execution_start");
+  assert.equal(events[fixtureCalls[0].eventIndex].toolName, "read");
+  assert.equal(events[fixtureCalls[0].eventIndex].args.path, "summary.json");
+
+  const capture = assertNativeAuthorityCapture({
+    result,
+    entries,
+    events,
+    backend,
+    scenario,
+    blockedCodes: ["execution_guard_rejected"],
+  });
+  const assistantMatches = capture.assistantCalls.filter(call =>
+    call.block.name === "read" && call.block.arguments?.path === "summary.json");
+  assert.equal(assistantMatches.length, 1, "The blocked dispatch did not retain its actual assistant-origin output read");
+  const assistantCall = assistantMatches[0];
+  const dispatch = capture.dispatchReceipts.find(receipt =>
+    receipt.data.call.assistantEntryId === assistantCall.entry.id
+    && receipt.data.call.toolCallId === assistantCall.block.id
+    && receipt.data.call.toolName === assistantCall.block.name);
+  assert.equal(dispatch?.data.decision, "blocked");
+  assert.equal(dispatch?.data.code, "execution_guard_rejected");
+  assert.equal(dispatch?.data.stepId, "S1");
+  assert.equal(typeof dispatch?.data.stateEntryId, "string");
+  const blocked = result.nativeToolAuthorityAudit.blockedDispatches[0];
+  assert.deepEqual(Object.keys(blocked).sort(), ["call", "code", "entryId"]);
+  assert.equal(blocked.entryId, dispatch.entry.id);
+  assert.deepEqual(blocked.call, dispatch.data.call);
+
+  const nativeResult = capture.toolResults.find(item => item.message.toolCallId === assistantCall.block.id);
+  assert.equal(nativeResult?.message.isError, true);
+  assert.match(textValues(nativeResult?.message.content).join("\n"), /current step does not declare this exact tool\/path\/command capability/u);
+  const nativeEnd = capture.ends.find(event => event.toolCallId === assistantCall.block.id && event.toolName === assistantCall.block.name);
+  assert.equal(nativeEnd?.isError, true);
+  assert.equal(Object.hasOwn(nativeResult?.message.details ?? {}, "staleExecutionResult"), false, "A blocked call unexpectedly reached the SDK tool_result hook");
+  assert.equal(capture.resultReceipts.some(receipt => receipt.data.call.toolCallId === assistantCall.block.id), false, "A blocked call must not fabricate a result-authority decision");
+  assert.equal(existsSync(path.join(output, "run-001", "workspace", "summary.json")), false);
+  assert.deepEqual(scenario.interviewActions, ["read:input.json", "solar_interview_round:ready"]);
+  assert.deepEqual(scenario.planningActions, ["solar_plan_ready"]);
+  assert.deepEqual(scenario.roleRequests, ["planner", "approach_reviewer", "critic"]);
+  assert.deepEqual(scenario.executorActions, ["read:summary.json:blocked", "stop:after-checkpoint-reminder"]);
+  assert.equal(backend.errors.length, 0, backend.errors.map(String).join("\n"));
+}
+
+function assertAuthorizedToolErrorRun(options) {
+  const capture = assertExecuteSummaryRun(options);
+  const { result, entries, events } = capture;
+  const fixtureCalls = result.fixturePolicyAudit.calls.filter(call =>
+    call.tool === "read"
+    && call.path === "input.json"
+    && events[call.eventIndex]?.args?.offset === TOOL_ERROR_OFFSET);
+  assert.equal(fixtureCalls.length, 1, "The controlled ordinary read error was not retained by fixture-policy measurement");
+  assert.equal(fixtureCalls[0].allowedByFixturePolicy, true);
+  assert.equal(fixtureCalls[0].phase, "after_approval");
+  assert.equal(fixtureCalls[0].reason, "fixture_local_read");
+
+  const authority = retainedAuthorityReceipts(entries);
+  const assistantMatches = retainedAssistantCalls(entries).filter(call =>
+    call.block.name === "read"
+    && call.block.arguments?.path === "input.json"
+    && call.block.arguments?.offset === TOOL_ERROR_OFFSET);
+  assert.equal(assistantMatches.length, 1, "The ordinary read error did not retain its actual assistant origin");
+  const assistantCall = assistantMatches[0];
+  const dispatch = authority.find(receipt =>
+    receipt.data.kind === "dispatch"
+    && receipt.data.call.assistantEntryId === assistantCall.entry.id
+    && receipt.data.call.toolCallId === assistantCall.block.id
+    && receipt.data.call.toolName === assistantCall.block.name);
+  assert.equal(dispatch?.data.decision, "execution_allowed");
+  assert.equal(dispatch?.data.code, null);
+  assert.equal(dispatch?.data.stepId, "S1");
+  assert.equal(typeof dispatch?.data.stateEntryId, "string");
+  const resultReceipt = authority.find(receipt =>
+    receipt.data.kind === "result"
+    && receipt.data.call.assistantEntryId === assistantCall.entry.id
+    && receipt.data.call.toolCallId === assistantCall.block.id
+    && receipt.data.call.toolName === assistantCall.block.name);
+  assert.equal(resultReceipt?.data.decision, "current", "An ordinary tool error still requires the current authority recheck");
+  assert.equal(resultReceipt?.data.code, null);
+
+  const nativeResults = retainedToolResults(entries).filter(item => item.message.toolCallId === assistantCall.block.id);
+  assert.equal(nativeResults.length, 1);
+  assert.equal(nativeResults[0].message.isError, true, "The authority recheck must preserve the original tool isError");
+  assert.match(textValues(nativeResults[0].message.content).join("\n"), new RegExp(`Offset ${TOOL_ERROR_OFFSET} is beyond end of file`));
+  assert.equal(Object.hasOwn(nativeResults[0].message.details ?? {}, "staleExecutionResult"), false, "An ordinary tool error was rewritten as a host denial");
+  const nativeEnds = events.filter(event =>
+    event.type === "tool_execution_end"
+    && event.toolCallId === assistantCall.block.id
+    && event.toolName === assistantCall.block.name);
+  assert.equal(nativeEnds.length, 1);
+  assert.equal(nativeEnds[0].isError, true);
+  assert.equal(result.nativeToolAuthorityAudit.denialCount, 0);
+  assert.equal(result.nativeToolAuthorityAudit.invalidationCount, 0);
+  assert.deepEqual(result.nativeToolAuthorityAudit.blockedDispatches, []);
+  assert.deepEqual(result.nativeToolAuthorityAudit.invalidatedResults, []);
+  assert.equal(result.assertions.find(item => item.id === "native_tool_authority_clean")?.passed, true);
 }
 
 async function main() {
@@ -948,6 +1328,8 @@ async function main() {
   const runDir = path.join(root, "run-dir");
   const workspace = path.join(runDir, "workspace");
   const harnessOutput = path.join(runDir, "execute-summary-harness");
+  const blockedHarnessOutput = path.join(runDir, "execute-summary-blocked-read-harness");
+  const toolErrorHarnessOutput = path.join(runDir, "execute-summary-tool-error-harness");
   const sessionFile = path.join(runDir, "session.jsonl");
   const positiveEvidence = path.join(runDir, "application-session-directory", "evidence.jsonl");
   const positiveEvidenceStream = `${positiveEvidence}:authorized-evidence`;
@@ -1110,6 +1492,12 @@ async function main() {
     assert.notEqual(runnerEnvironment.PI_CODING_AGENT_DIR, environment.PI_CODING_AGENT_DIR);
     assert.notEqual(runnerEnvironment.HOME, environment.HOME);
     const harnessRunner = path.join(REPOSITORY_ROOT, "scripts", "harness-experiment.mjs");
+    const runnerOptions = {
+      cwd: runDir,
+      env: { ...runnerEnvironment, PI_CLI_PATH: cliPath },
+      timeout: 210_000,
+    };
+    const positiveScenario = backend.beginExecuteSummary("positive");
     const runnerArguments = [
       "--checkout", REPOSITORY_ROOT,
       "--label", "installed-pi-loopback-rpc-approval",
@@ -1117,19 +1505,55 @@ async function main() {
       "--case", "execute-summary",
       "--timeout-ms", "180000",
     ];
-    const runnerReceipt = await runCli(harnessRunner, runnerArguments, {
-      cwd: runDir,
-      env: { ...runnerEnvironment, PI_CLI_PATH: cliPath },
-      timeout: 210_000,
-    });
-    assertExecuteSummaryRun({ backend, cliPath, output: harnessOutput, runnerArguments, runnerReceipt });
+    const runnerReceipt = await runCli(harnessRunner, runnerArguments, runnerOptions);
+    backend.finishExecuteSummary(positiveScenario);
+    assertExecuteSummaryRun({ backend, scenario: positiveScenario, cliPath, output: harnessOutput, runnerArguments, runnerReceipt });
 
-    console.log("[pi-smoke] PASS: installed current-session, tilde-private, namespace-private, session-stream, and credential-dotfile-stream denial plus positive namespace/named-stream JSONL evidence read, reload V2/V3, Solar-only pre-inference refusal, InterviewRoundV2 goal confirmation, host-owned ResearchContractV2 persistence, native-schema tool-free Solar Max three-role planning, reviewed planning-only closure, and real installed-RPC execute-summary approval through all 16 independent runner assertions");
+    const blockedScenario = backend.beginExecuteSummary("blocked-output-read");
+    const blockedRunnerArguments = [
+      "--checkout", REPOSITORY_ROOT,
+      "--label", "installed-pi-loopback-native-authority-block",
+      "--output", blockedHarnessOutput,
+      "--case", "execute-summary",
+      "--timeout-ms", "180000",
+    ];
+    const blockedRunnerReceipt = await runCli(harnessRunner, blockedRunnerArguments, {
+      ...runnerOptions,
+      acceptExitCodes: [0, 1],
+    });
+    backend.finishExecuteSummary(blockedScenario);
+    assertBlockedOutputReadRun({
+      backend,
+      scenario: blockedScenario,
+      output: blockedHarnessOutput,
+      runnerReceipt: blockedRunnerReceipt,
+    });
+
+    const toolErrorScenario = backend.beginExecuteSummary("authorized-tool-error");
+    const toolErrorRunnerArguments = [
+      "--checkout", REPOSITORY_ROOT,
+      "--label", "installed-pi-loopback-authorized-tool-error",
+      "--output", toolErrorHarnessOutput,
+      "--case", "execute-summary",
+      "--timeout-ms", "180000",
+    ];
+    const toolErrorRunnerReceipt = await runCli(harnessRunner, toolErrorRunnerArguments, runnerOptions);
+    backend.finishExecuteSummary(toolErrorScenario);
+    assertAuthorizedToolErrorRun({
+      backend,
+      scenario: toolErrorScenario,
+      cliPath,
+      output: toolErrorHarnessOutput,
+      runnerArguments: toolErrorRunnerArguments,
+      runnerReceipt: toolErrorRunnerReceipt,
+    });
+
+    console.log("[pi-smoke] PASS: installed current-session, tilde-private, namespace-private, session-stream, and credential-dotfile-stream denial plus positive namespace/named-stream JSONL evidence read, reload V2/V3, Solar-only pre-inference refusal, InterviewRoundV2 goal confirmation, host-owned ResearchContractV2 persistence, native-schema tool-free Solar Max three-role planning, reviewed planning-only closure, real installed-RPC execute-summary approval through all 17 independent runner assertions with complete native authority coverage, a fixture-allowed current-step output-read denial, and an ordinary authorized tool error with a current result recheck");
     passed = true;
   } finally {
     if (rpc) await rpc.close();
     if (backend) await backend.close();
-    if (passed) safelyRemove(root, [agentDir, runnerAgentDir, workspace, harnessOutput]);
+    if (passed) safelyRemove(root, [agentDir, runnerAgentDir, workspace, harnessOutput, blockedHarnessOutput, toolErrorHarnessOutput]);
     else console.error(`[pi-smoke] retained failure artifacts: ${root}`);
   }
 }

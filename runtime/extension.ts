@@ -69,6 +69,7 @@ import {
   executionExpectation,
   finishVerification,
   initializeLoop,
+  NATIVE_TOOL_AUTHORITY_ENTRY,
   nextStep,
   parseVisibleJson,
   recordPlanReview,
@@ -85,8 +86,10 @@ import {
   structuredRevision,
   validateCurrentPlanReview,
   validateExecutionPlan,
+  validateNativeToolAuthorityReceipt,
   validateStepApproach,
   type DispatchExpectation,
+  type NativeToolAuthorityReceipt,
   type PlanningRole,
   type SolarRoleReceipt,
 } from "./loop.ts";
@@ -136,6 +139,9 @@ const HOST_TOOL_INVENTORY_RULES = `Pi host tool inventory rules:
 - This inventory is environment evidence only, never authorization. A listed tool still requires support in the original user scope plus the exact capability kind, paths, commands, step binding, review, and human approval. Never add authority merely because a tool is listed.
 - A capability kind such as read, write, or command is not a tool name unless that exact name independently appears in capabilityToolNames. The isolated role itself remains tool-free.`;
 const INTERVIEW_TOOL_BUDGET = 6;
+type NativeToolAuthorityCallRef = Extract<NativeToolAuthorityReceipt, { kind: "dispatch" }>["call"];
+type NativeToolAuthorityDispatchCode = Exclude<Extract<NativeToolAuthorityReceipt, { kind: "dispatch" }>["code"], null>;
+type NativeToolAuthorityResultCode = Exclude<Extract<NativeToolAuthorityReceipt, { kind: "result" }>["code"], null>;
 const ANSWER_EVIDENCE_DESCRIPTION = "Exact saved answer IDs only, copied byte-for-byte from the host's current answer-ID list. Each array item is one bare ID; never use a content hash, explanation, label, filename, or invented ID.";
 const DIMENSION_GAP_DESCRIPTION = "Assess this dimension independently. If score is below 1, supply a nonempty description of its unresolved gap even when another dimension or readiness names the same gap. Use an empty string only when this dimension has no unresolved gap.";
 const SOURCE_HASH_DESCRIPTION = "Exact host-supplied 64-character answer or research content SHA-256 values only. Content hashes belong only in MaterialState sourceContentHashes, never in evidence or evidenceIds.";
@@ -1095,7 +1101,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
   let webBusy = false;
   let planningRunner: SolarRoleRunner | undefined;
   const authorizedCalls = new Map<string,
-    | { kind: "execution"; status: "pending" | "invalidated" | "consumed"; expectation: DispatchExpectation; operation: any; reason?: string }
+    | { kind: "execution"; status: "pending" | "invalidated" | "consumed"; expectation: DispatchExpectation; operation: any; call: NativeToolAuthorityCallRef | null; reason?: string }
     | { kind: "other"; status: "pending" | "consumed" }
     | { kind: "blocked"; status: "consumed"; reason: string }
   >();
@@ -1124,6 +1130,110 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
     } catch {
       // UI failures must not turn a handled authority refusal into inference.
     }
+  }
+
+  function nativeToolAuthorityDiagnostic(ctx: any, problem: string) {
+    safeNotify(ctx, `Solar native tool authority audit ${problem}. Runtime enforcement and the original tool outcome are unchanged; audit coverage is incomplete.`);
+  }
+
+  function persistNativeToolAuthorityReceipt(ctx: any, receipt: NativeToolAuthorityReceipt) {
+    try {
+      pi.appendEntry(NATIVE_TOOL_AUTHORITY_ENTRY, validateNativeToolAuthorityReceipt(receipt));
+      return true;
+    } catch {
+      nativeToolAuthorityDiagnostic(ctx, "could not persist a valid native receipt");
+      return false;
+    }
+  }
+
+  function isNativeToolAuthorityIdentity(value: unknown): value is string {
+    return typeof value === "string" && value.length > 0 && !/[\s\p{Cc}]/u.test(value);
+  }
+
+  function resolveNativeToolCallRef(event: any, ctx: any): NativeToolAuthorityCallRef | null {
+    try {
+      const matches = branch(ctx).filter((entry: any) =>
+        entry?.type === "message"
+        && entry.message?.role === "assistant"
+        && Array.isArray(entry.message.content)
+        && entry.message.content.some((block: any) =>
+          block?.type === "toolCall"
+          && block.id === event?.toolCallId
+          && block.name === event?.toolName));
+      if (matches.length !== 1
+        || !isNativeToolAuthorityIdentity(matches[0]?.id)
+        || !isNativeToolAuthorityIdentity(event?.toolCallId)
+        || !isNativeToolAuthorityIdentity(event?.toolName)) {
+        nativeToolAuthorityDiagnostic(ctx, "could not attribute a tool call to exactly one retained assistant entry");
+        return null;
+      }
+      return {
+        assistantEntryId: matches[0].id,
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+      };
+    } catch {
+      nativeToolAuthorityDiagnostic(ctx, "could not inspect the retained assistant origin");
+      return null;
+    }
+  }
+
+  function currentNativeWorkflowStateEntryId(ctx: any, fresh: any) {
+    if (!fresh) return null;
+    try {
+      const entry = [...branch(ctx)].reverse().find((candidate: any) =>
+        candidate?.type === "custom"
+        && candidate.customType === WORKFLOW_STATE
+        && candidate.data?.id === fresh.id);
+      if (isNativeToolAuthorityIdentity(entry?.id)) return entry.id;
+    } catch {
+      // The safe diagnostic below covers both unavailable and malformed native state provenance.
+    }
+    nativeToolAuthorityDiagnostic(ctx, "could not bind the current persisted workflow-state entry");
+    return null;
+  }
+
+  function emitNativeToolAuthorityDispatch(
+    event: any,
+    ctx: any,
+    fresh: any,
+    decision: "dispatch_allowed" | "execution_allowed" | "blocked",
+    code: NativeToolAuthorityDispatchCode | null,
+    stepId: string | null = null,
+    call: NativeToolAuthorityCallRef | null = resolveNativeToolCallRef(event, ctx),
+  ) {
+    if (!call) return;
+    const stateEntryId = currentNativeWorkflowStateEntryId(ctx, fresh);
+    if (decision === "execution_allowed" && stateEntryId === null) return;
+    if (decision === "execution_allowed" && !isNativeToolAuthorityIdentity(stepId)) {
+      nativeToolAuthorityDiagnostic(ctx, "could not bind an allowed execution to current workflow provenance");
+      return;
+    }
+    persistNativeToolAuthorityReceipt(ctx, {
+      version: 1,
+      kind: "dispatch",
+      call,
+      stateEntryId,
+      stepId,
+      decision,
+      code,
+    });
+  }
+
+  function emitNativeToolAuthorityResult(
+    ctx: any,
+    call: NativeToolAuthorityCallRef | null,
+    decision: "current" | "invalidated",
+    code: NativeToolAuthorityResultCode | null,
+  ) {
+    if (!call) return;
+    persistNativeToolAuthorityReceipt(ctx, {
+      version: 1,
+      kind: "result",
+      call,
+      decision,
+      code,
+    });
   }
 
   function mainInstructionFrame(current: any) {
@@ -1843,6 +1953,13 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
 
   pi.on("session_start", (_event, ctx) => {
     closed = false;
+    persistNativeToolAuthorityReceipt(ctx, {
+      version: 1,
+      kind: "coverage",
+      scope: "main_session_native_tool_hooks",
+      dispatch: "every_call",
+      result: "every_execution_allowed_call",
+    });
     restore(ctx);
     if (interviewPause && workflow?.stage === "interview" && workflow.status === "active") {
       saveWorkflow({ ...workflow, status: "paused", pendingHandoff: false, approval: undefined, approvalArtifactTableRevision: undefined, reason: interviewPause.reason });
@@ -2536,7 +2653,18 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
   });
 
   pi.on("tool_call", (event: any, ctx) => {
-    if (authorizedCalls.has(event.toolCallId)) return { block: true, reason: "Duplicate tool-call ID rejected before it could overwrite an existing authorization or tombstone.", terminate: true };
+    if (authorizedCalls.has(event.toolCallId)) {
+      const reason = "Duplicate tool-call ID rejected before it could overwrite an existing authorization or tombstone.";
+      const outcome = { block: true, reason, terminate: true };
+      let auditFresh: any;
+      try {
+        auditFresh = currentWorkflow(ctx);
+      } catch {
+        nativeToolAuthorityDiagnostic(ctx, "could not inspect current workflow state for a duplicate call");
+      }
+      emitNativeToolAuthorityDispatch(event, ctx, auditFresh, "blocked", "duplicate_call");
+      return outcome;
+    }
     const last: any = [...branch(ctx)].reverse().find(entry => entry.message?.role === "assistant")?.message;
     const calls = Array.isArray(last?.content) ? last.content.filter((block: any) => block.type === "toolCall") : [];
     const fresh = currentWorkflow(ctx);
@@ -2546,10 +2674,12 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
         toolCalls += 1;
       }
       rememberBlockedCall(event.toolCallId, reason);
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "mixed_control_batch");
       return { block: true, reason, terminate: true };
     }
     if (!fresh) {
       rememberOtherCall(event.toolCallId);
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "dispatch_allowed", null);
       return;
     }
     if (fresh.stage === "interview" && READ_ONLY_WORKFLOW_STATUSES.has(fresh.status) && event.toolName === "read") {
@@ -2557,29 +2687,45 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
       if (toolCalls > INTERVIEW_TOOL_BUDGET) {
         const reason = "Interview tool budget reached; pause for a user decision instead of looping.";
         rememberBlockedCall(event.toolCallId, reason);
+        emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "interview_budget");
         return { block: true, reason, terminate: true };
       }
       const denial = interviewReadDenial(event.input?.path, ctx.cwd, fresh, interviewProtectedRootPaths, currentSessionFile(ctx));
       if (denial) {
         const reason = `Interview read denied before dispatch: ${denial}. The exact current host-designated research artifact is the only controller-owned read exception. This failed read remains an error and consumed one of the six interview-stage tool calls.`;
         rememberBlockedCall(event.toolCallId, reason);
+        emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "interview_read_denied");
         return { block: true, reason, terminate: true };
       }
     }
-    if (READ_ONLY_WORKFLOW_STATUSES.has(fresh.status) && event.toolName !== "read") return { block: true, reason: "Workflow is waiting for an explicit human/recovery boundary. Only read is available.", terminate: true };
+    if (READ_ONLY_WORKFLOW_STATUSES.has(fresh.status) && event.toolName !== "read") {
+      const reason = "Workflow is waiting for an explicit human/recovery boundary. Only read is available.";
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "waiting_boundary");
+      return { block: true, reason, terminate: true };
+    }
     if (fresh.status !== "active") {
       rememberOtherCall(event.toolCallId);
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "dispatch_allowed", null);
       return;
     }
-    if (!modelReady || solarProblem(ctx)) return { block: true, reason: "Solar model/thinking identity changed; this tool dispatch is not authorized.", terminate: true };
+    if (!modelReady || solarProblem(ctx)) {
+      const reason = "Solar model/thinking identity changed; this tool dispatch is not authorized.";
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "model_identity");
+      return { block: true, reason, terminate: true };
+    }
 
     const allowed = stageTools(fresh) ?? [];
-    if (!allowed.includes(event.toolName)) return { block: true, reason: `Tool ${event.toolName} is default-denied in the active ${fresh.stage} stage.`, terminate: true };
+    if (!allowed.includes(event.toolName)) {
+      const reason = `Tool ${event.toolName} is default-denied in the active ${fresh.stage} stage.`;
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "stage_tool_denied");
+      return { block: true, reason, terminate: true };
+    }
     if (fresh.stage === "interview") {
       toolCalls += 1;
       if (toolCalls > INTERVIEW_TOOL_BUDGET) {
         const reason = "Interview tool budget reached; pause for a user decision instead of looping.";
         rememberBlockedCall(event.toolCallId, reason);
+        emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "interview_budget");
         return { block: true, reason, terminate: true };
       }
       if (event.toolName === "read") {
@@ -2587,37 +2733,56 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
         if (denial) {
           const reason = `Interview read denied before dispatch: ${denial}. The exact current host-designated research artifact is the only controller-owned read exception. This failed read remains an error and consumed one of the six interview-stage tool calls.`;
           rememberBlockedCall(event.toolCallId, reason);
+          emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "interview_read_denied");
           return { block: true, reason, terminate: true };
         }
       }
     }
     if (fresh.stage === "execute" && !["solar_step_done", "solar_revisit"].includes(event.toolName)) {
+      const call = resolveNativeToolCallRef(event, ctx);
+      let stepId: string | null = null;
       try {
         assertCapabilityToolsAvailable(fresh.plan.contract, hostToolInventory(pi), "Execution dispatch");
         const step = nextStep(fresh);
         if (!step) throw new Error("No mutation/read tool is authorized after all steps; request final verification only.");
+        stepId = step.id;
         const operation = operationForTool(event, fresh, step);
         if (!operation) throw new Error("The execution tool cannot be mapped unambiguously to one declared read/write/command operation.");
         const expectation = executionExpectation(fresh, { kind: "step", stepId: step.id });
         assertExecutionAuthority(fresh, diskPlanSnapshot(ctx, fresh), expectation, operation, ctx.signal);
-        authorizedCalls.set(event.toolCallId, { kind: "execution", status: "pending", expectation, operation });
+        authorizedCalls.set(event.toolCallId, { kind: "execution", status: "pending", expectation, operation, call });
+        emitNativeToolAuthorityDispatch(event, ctx, fresh, "execution_allowed", null, stepId, call);
       } catch (error) {
+        emitNativeToolAuthorityDispatch(event, ctx, fresh, "blocked", "execution_guard_rejected", stepId, call);
         return { block: true, reason: errorText(error), terminate: true };
       }
-    } else rememberOtherCall(event.toolCallId);
+    } else {
+      rememberOtherCall(event.toolCallId);
+      emitNativeToolAuthorityDispatch(event, ctx, fresh, "dispatch_allowed", null);
+    }
   });
 
   pi.on("tool_result", (event: any, ctx) => {
     const authorization = authorizedCalls.get(event.toolCallId);
     if (authorization?.kind === "execution") {
-      if (authorization.status !== "pending") return staleToolResult(authorization.reason ?? "Duplicate or invalidated execution tool result is non-authoritative.");
+      if (authorization.status !== "pending") {
+        emitNativeToolAuthorityResult(
+          ctx,
+          authorization.call,
+          "invalidated",
+          authorization.status === "consumed" ? "duplicate_result" : "authorization_already_invalidated",
+        );
+        return staleToolResult(authorization.reason ?? "Duplicate or invalidated execution tool result is non-authoritative.");
+      }
       try {
         const fresh = currentWorkflow(ctx);
         if (!modelReady || solarProblem(ctx)) throw new Error("Solar model/thinking identity changed while the tool ran; its result is non-authoritative.");
         assertExecutionAuthority(fresh, diskPlanSnapshot(ctx, fresh), authorization.expectation, authorization.operation, ctx.signal);
         authorizedCalls.set(event.toolCallId, { ...authorization, status: "consumed" });
+        emitNativeToolAuthorityResult(ctx, authorization.call, "current", null);
       } catch (error) {
         authorizedCalls.set(event.toolCallId, { ...authorization, status: "invalidated", reason: errorText(error) });
+        emitNativeToolAuthorityResult(ctx, authorization.call, "invalidated", "authority_recheck_failed");
         return staleToolResult(errorText(error));
       }
     } else if (authorization?.kind === "blocked") {
@@ -2628,7 +2793,11 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
     } else {
       let fresh: any;
       try { fresh = currentWorkflow(ctx); } catch {}
-      if (isDeclaredExecutionTool(fresh, event.toolName)) return staleToolResult("Unknown execution tool result ID has no matching host authorization.");
+      if (isDeclaredExecutionTool(fresh, event.toolName)) {
+        const call = resolveNativeToolCallRef(event, ctx);
+        emitNativeToolAuthorityResult(ctx, call, "invalidated", "unknown_authorization");
+        return staleToolResult("Unknown execution tool result ID has no matching host authorization.");
+      }
     }
     if (event.toolName === "solar_interview_round" && event.details?.interviewValidationError) return { isError: true };
     if (event.details?.workflowValidationError || event.details?.webValidationError) return { isError: true };

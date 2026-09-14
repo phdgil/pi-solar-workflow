@@ -9,7 +9,55 @@ export const PLAN_REVIEW_CORRELATION_NOTICE = "Planner, Approach Reviewer, and C
 export const ROLE_ATTEMPT_TIMEOUT_MS = 180_000;
 const executionContractIdPattern = new RegExp(EXECUTION_CONTRACT_ID_PATTERN);
 export const PROVENANCE_LIMITS = Object.freeze({ bundleBytes: 1_024 * 1024, sourceExcerptBytes: 128 * 1024 });
+export const NATIVE_TOOL_AUTHORITY_ENTRY = "solar-native-tool-authority-v1";
 
+type NativeToolAuthorityCallRef = {
+  assistantEntryId: string;
+  toolCallId: string;
+  toolName: string;
+};
+const NATIVE_TOOL_AUTHORITY_DISPATCH_BLOCK_CODES = [
+  "duplicate_call",
+  "mixed_control_batch",
+  "interview_budget",
+  "interview_read_denied",
+  "waiting_boundary",
+  "model_identity",
+  "stage_tool_denied",
+  "execution_guard_rejected",
+] as const;
+const NATIVE_TOOL_AUTHORITY_RESULT_INVALIDATION_CODES = [
+  "authority_recheck_failed",
+  "authorization_already_invalidated",
+  "duplicate_result",
+  "unknown_authorization",
+] as const;
+type NativeToolAuthorityDispatchBlockCode = typeof NATIVE_TOOL_AUTHORITY_DISPATCH_BLOCK_CODES[number];
+type NativeToolAuthorityResultInvalidationCode = typeof NATIVE_TOOL_AUTHORITY_RESULT_INVALIDATION_CODES[number];
+export type NativeToolAuthorityReceipt =
+  | {
+      version: 1;
+      kind: "coverage";
+      scope: "main_session_native_tool_hooks";
+      dispatch: "every_call";
+      result: "every_execution_allowed_call";
+    }
+  | {
+      version: 1;
+      kind: "dispatch";
+      call: NativeToolAuthorityCallRef;
+      stateEntryId: string | null;
+      stepId: string | null;
+      decision: "dispatch_allowed" | "execution_allowed" | "blocked";
+      code: NativeToolAuthorityDispatchBlockCode | null;
+    }
+  | {
+      version: 1;
+      kind: "result";
+      call: NativeToolAuthorityCallRef;
+      decision: "current" | "invalidated";
+      code: NativeToolAuthorityResultInvalidationCode | null;
+    };
 
 export type ArtifactDescriptor = {
   id: string;
@@ -251,6 +299,62 @@ function exactObject(value: unknown, keys: string[], label: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
   const extra = Object.keys(value).filter(key => !keys.includes(key));
   if (extra.length) throw new Error(`${label} contains unsupported fields: ${extra.join(", ")}.`);
+}
+
+function exactRequiredObject(value: unknown, keys: string[], label: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
+  const ownKeys = Reflect.ownKeys(value);
+  const missing = keys.filter(key => !Object.hasOwn(value, key));
+  if (missing.length) throw new Error(`${label} is missing required fields: ${missing.join(", ")}.`);
+  const extra = ownKeys.filter(key => typeof key !== "string" || !keys.includes(key));
+  if (extra.length) throw new Error(`${label} contains unsupported fields: ${extra.map(String).join(", ")}.`);
+}
+
+function nativeAuthorityIdentity(value: unknown, label: string) {
+  if (typeof value !== "string" || !value.length || /[\s\p{Cc}]/u.test(value)) throw new Error(`${label} must be an exact nonempty native identity without whitespace or control characters.`);
+  return value;
+}
+
+export function validateNativeToolAuthorityReceipt(value: unknown): NativeToolAuthorityReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("NativeToolAuthorityReceipt must be an object.");
+  if (!Object.hasOwn(value, "kind") || !Object.hasOwn(value, "version")) throw new Error("NativeToolAuthorityReceipt requires kind and version.");
+  const receipt = value as Record<string, unknown>;
+  if (receipt.kind === "coverage") {
+    exactRequiredObject(receipt, ["version", "kind", "scope", "dispatch", "result"], "Native tool authority coverage receipt");
+    if (receipt.version !== 1
+      || receipt.scope !== "main_session_native_tool_hooks"
+      || receipt.dispatch !== "every_call"
+      || receipt.result !== "every_execution_allowed_call") throw new Error("Native tool authority coverage receipt has invalid fixed fields.");
+    return value as NativeToolAuthorityReceipt;
+  }
+  if (receipt.kind !== "dispatch" && receipt.kind !== "result") throw new Error("NativeToolAuthorityReceipt kind is invalid.");
+  const call = receipt.call;
+  exactRequiredObject(call, ["assistantEntryId", "toolCallId", "toolName"], "Native tool authority call reference");
+  nativeAuthorityIdentity(call.assistantEntryId, "assistantEntryId");
+  nativeAuthorityIdentity(call.toolCallId, "toolCallId");
+  nativeAuthorityIdentity(call.toolName, "toolName");
+  if (receipt.kind === "dispatch") {
+    exactRequiredObject(receipt, ["version", "kind", "call", "stateEntryId", "stepId", "decision", "code"], "Native tool authority dispatch receipt");
+    if (receipt.version !== 1) throw new Error("Native tool authority dispatch receipt version is invalid.");
+    if (receipt.stateEntryId !== null) nativeAuthorityIdentity(receipt.stateEntryId, "stateEntryId");
+    if (receipt.stepId !== null) nativeAuthorityIdentity(receipt.stepId, "stepId");
+    if (receipt.decision === "dispatch_allowed") {
+      if (receipt.code !== null) throw new Error("dispatch_allowed requires code:null.");
+    } else if (receipt.decision === "execution_allowed") {
+      if (receipt.code !== null || receipt.stateEntryId === null || receipt.stepId === null) throw new Error("execution_allowed requires code:null, stateEntryId, and stepId.");
+    } else if (receipt.decision === "blocked") {
+      if (!(NATIVE_TOOL_AUTHORITY_DISPATCH_BLOCK_CODES as readonly unknown[]).includes(receipt.code)) throw new Error("blocked requires a recognized dispatch block code.");
+    } else throw new Error("Native tool authority dispatch decision is invalid.");
+    return value as NativeToolAuthorityReceipt;
+  }
+  exactRequiredObject(receipt, ["version", "kind", "call", "decision", "code"], "Native tool authority result receipt");
+  if (receipt.version !== 1) throw new Error("Native tool authority result receipt version is invalid.");
+  if (receipt.decision === "current") {
+    if (receipt.code !== null) throw new Error("current requires code:null.");
+  } else if (receipt.decision === "invalidated") {
+    if (!(NATIVE_TOOL_AUTHORITY_RESULT_INVALIDATION_CODES as readonly unknown[]).includes(receipt.code)) throw new Error("invalidated requires a recognized result invalidation code.");
+  } else throw new Error("Native tool authority result decision is invalid.");
+  return value as NativeToolAuthorityReceipt;
 }
 
 export function validateRoleContextBundle(value: unknown): RoleContextBundle {

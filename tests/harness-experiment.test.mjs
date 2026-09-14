@@ -15,7 +15,8 @@ import {
   validateSyntheticApproval,
 } from "../scripts/harness-fixtures.mjs";
 import {
-  auditObservedOperations,
+  auditFixturePolicy,
+  auditNativeToolAuthority,
   boundedRunTimeout,
   experimentProtocolReceipt,
   parseHarnessArguments,
@@ -25,11 +26,141 @@ import {
   runStatus,
   summarizeObservedMetrics,
 } from "../scripts/harness-experiment.mjs";
+import { NATIVE_TOOL_AUTHORITY_ENTRY } from "../runtime/loop.ts";
 
 const FRESH_HELD_OUT_CASES = [
   "execute-module-alias-heldout",
   "execute-access-matrix-heldout",
 ];
+
+function cleanFixturePolicyAudit(approvalEventIndex = null) {
+  return {
+    scope: "fixture_policy",
+    approvalEventIndex,
+    calls: [],
+    violations: [],
+  };
+}
+
+function cleanNativeToolAuthorityAudit() {
+  return {
+    coverage: "complete",
+    declarationEntryId: "authority-declaration",
+    capturedLeafId: "authority-declaration",
+    counts: {
+      calls: 0,
+      starts: 0,
+      ends: 0,
+      toolResults: 0,
+      dispatches: 0,
+      requiredResults: 0,
+      resultDecisions: 0,
+    },
+    blockedDispatches: [],
+    invalidatedResults: [],
+    issues: [],
+    denialCount: 0,
+    invalidationCount: 0,
+  };
+}
+
+function fixturePreApprovalMutations(audit) {
+  return audit.calls.filter(call =>
+    call.phase === "before_approval" && ["write", "edit", "bash", "powershell"].includes(call.tool));
+}
+
+function linkNativeEntries(entries) {
+  return entries.map((entry, index) => ({
+    ...structuredClone(entry),
+    parentId: index === 0 ? null : entries[index - 1].id,
+    timestamp: `2026-09-14T22:00:${String(index).padStart(2, "0")}.000Z`,
+  }));
+}
+
+function nativeAuthorityScenario({
+  dispatchDecision = "execution_allowed",
+  dispatchCode = null,
+  resultDecision = "current",
+  resultCode = null,
+  isError = false,
+  toolName = "read",
+  args = { path: "input.json" },
+  stateEntryId = "workflow-state",
+  stepId = dispatchDecision === "execution_allowed" ? "S1" : null,
+} = {}) {
+  const call = { assistantEntryId: "assistant-call", toolCallId: "tool-call-1", toolName };
+  const entries = [
+    {
+      id: "authority-coverage",
+      type: "custom",
+      customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+      data: {
+        version: 1,
+        kind: "coverage",
+        scope: "main_session_native_tool_hooks",
+        dispatch: "every_call",
+        result: "every_execution_allowed_call",
+      },
+    },
+    {
+      id: "workflow-state",
+      type: "custom",
+      customType: "solar-workflow-state-v1",
+      data: { version: 3, id: "synthetic-workflow", stage: "execute", status: "active" },
+    },
+    {
+      id: call.assistantEntryId,
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: call.toolCallId, name: call.toolName, arguments: args }],
+      },
+    },
+    {
+      id: "authority-dispatch",
+      type: "custom",
+      customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+      data: {
+        version: 1,
+        kind: "dispatch",
+        call,
+        stateEntryId,
+        stepId,
+        decision: dispatchDecision,
+        code: dispatchCode,
+      },
+    },
+  ];
+  if (dispatchDecision === "execution_allowed") {
+    entries.push({
+      id: "authority-result",
+      type: "custom",
+      customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+      data: { version: 1, kind: "result", call, decision: resultDecision, code: resultCode },
+    });
+  }
+  entries.push({
+    id: "native-tool-result",
+    type: "message",
+    message: {
+      role: "toolResult",
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
+      content: [{ type: "text", text: isError ? "ordinary tool error" : "ok" }],
+      isError,
+    },
+  });
+  const linkedEntries = linkNativeEntries(entries);
+  return {
+    call,
+    entries: linkedEntries,
+    leafId: linkedEntries.at(-1).id,
+    events: [
+      { type: "tool_execution_start", toolCallId: call.toolCallId, toolName: call.toolName, args },
+      { type: "tool_execution_end", toolCallId: call.toolCallId, toolName: call.toolName, result: {}, isError },
+    ],
+  };
+}
 
 function validExecuteContract(caseName = "execute-summary") {
   const fixture = getHarnessFixture(caseName);
@@ -315,7 +446,8 @@ function completedExecuteObservation(caseName, output) {
     beforeFiles: snapshots.before,
     afterFiles: snapshots.after,
     outputContents: { [outputPath]: raw },
-    operationAudit: { approvalEventIndex: 0, unauthorized: [], preApprovalMutations: [] },
+    fixturePolicyAudit: cleanFixturePolicyAudit(0),
+    nativeToolAuthorityAudit: cleanNativeToolAuthorityAudit(),
     planContract: structuredClone(contract),
   };
   observation.approvalEligibility = eligibleFixtureReceipt(contract, caseName);
@@ -353,12 +485,13 @@ test("the specification-only interview states its zero-filesystem authority", ()
   assert.match(fixture.initialPrompt, /prospective names, not existing files to inspect/u);
   assert.equal(fixtureManifest(fixture.name).initialPrompt, fixture.initialPrompt);
   const workspace = process.platform === "win32" ? "C:\\fixture" : "/fixture";
-  const audit = auditObservedOperations(
+  const audit = auditFixturePolicy(
     ["records.json", ".pi/state/interview.json"].map(file => ({ type: "tool_execution_start", toolName: "read", args: { path: file } })),
     { fixture: fixture.name, workspace, approvalEventIndex: null },
   );
-  assert.equal(audit.unauthorized.length, 2);
-  assert.ok(audit.unauthorized.every(operation => operation.reason === "read_outside_fixture"));
+  assert.equal(audit.scope, "fixture_policy");
+  assert.equal(audit.violations.length, 2);
+  assert.ok(audit.violations.every(call => call.reason === "read_outside_fixture"));
 });
 
 test("execution requests explicitly state the domain enforced by the unchanged approval guard", () => {
@@ -475,11 +608,20 @@ test("fresh held-out execute fixtures retain exact JSON confirmation and approva
   }
 });
 
-test("protocol fingerprint binds the executing driver and independent grader", () => {
+test("protocol fingerprint binds the driver, grader, and trusted authority dependencies", () => {
   const receipt = experimentProtocolReceipt();
   for (const name of ["harness-experiment.mjs", "harness-fixtures.mjs"]) {
     assert.equal(receipt.fileSha256[name], sha256Text(readFileSync(new URL(`../scripts/${name}`, import.meta.url), "utf8")));
   }
+  for (const name of ["loop.ts", "planner-output.ts"]) {
+    assert.equal(receipt.fileSha256[`runtime/${name}`], sha256Text(readFileSync(new URL(`../runtime/${name}`, import.meta.url), "utf8")));
+  }
+  assert.deepEqual(Object.keys(receipt.fileSha256), [
+    "harness-experiment.mjs",
+    "harness-fixtures.mjs",
+    "runtime/loop.ts",
+    "runtime/planner-output.ts",
+  ]);
   assert.match(receipt.protocolSha256, /^[a-f0-9]{64}$/u);
 });
 
@@ -522,6 +664,10 @@ test("RPC entry cursors are forwarded exactly and unavailable or malformed evide
   await assert.rejects(client.entryPage(Date.now() + 1000, 500, "entry-watermark"), /repeated its exclusive cursor/u);
   client.request = async () => ({ data: { entries: [{ id: "exact-grant" }, { id: "" }], leafId: "" } });
   await assert.rejects(client.entryPage(Date.now() + 1000, 500, "entry-watermark"), /malformed ID/u);
+  const c1Control = String.fromCodePoint(0x90);
+  client.request = async () => ({ data: { entries: [{ id: `coverage${c1Control}entry` }], leafId: `coverage${c1Control}entry` } });
+  await assert.rejects(client.entryPage(Date.now() + 1000, 500), /malformed ID/u);
+  await assert.rejects(client.entryPage(Date.now() + 1000, 500, `cursor${c1Control}entry`), /well-formed cursor/u);
 });
 
 test("a runner timeout is not relabeled as a provider cause by its own cancellation", () => {
@@ -649,7 +795,7 @@ async function approvalFlowScenario({
     } catch (caught) {
       error = caught;
     }
-    const audit = auditObservedOperations(client.events, { fixture, workspace, approvalEventIndex: flow.approvalBoundaryEventIndex });
+    const audit = auditFixturePolicy(client.events, { fixture, workspace, approvalEventIndex: flow.approvalBoundaryEventIndex });
     return { fixture, flow, result, error, client, audit, planWorkflow };
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -706,9 +852,9 @@ test("rejected or stale approval commands leave all following mutations pre-appr
   assert.match(rejected.flow.approval.request.rpcRequestId, /^harness-/u);
   assert.match(rejected.flow.approval.request.entryWatermark, /^entry-/u);
   assert.equal(rejected.flow.prompts.at(-1), rejected.flow.approval.request.command);
-  assert.equal(rejected.audit.preApprovalMutations.length, 1);
-  assert.equal(rejected.audit.unauthorized.length, 1);
-  assert.equal(rejected.audit.operations.at(-1).phase, "before_approval");
+  assert.equal(fixturePreApprovalMutations(rejected.audit).length, 1);
+  assert.equal(rejected.audit.violations.length, 1);
+  assert.equal(rejected.audit.calls.at(-1).phase, "before_approval");
 
   const stale = await approvalFlowScenario({
     onApproval: ({ client, planWorkflow }) => {
@@ -888,8 +1034,8 @@ test("only an exact host grant advances the audit boundary, including before a l
   assert.equal(accepted.audit.approvalEventIndex, 2);
   assert.ok(accepted.flow.approval.request.eventIndex
     < accepted.client.events.findIndex(event => event.type === "tool_execution_start"));
-  assert.deepEqual(accepted.audit.preApprovalMutations, []);
-  assert.deepEqual(accepted.audit.unauthorized, []);
+  assert.deepEqual(fixturePreApprovalMutations(accepted.audit), []);
+  assert.deepEqual(accepted.audit.violations, []);
 
   const failed = await approvalFlowScenario({
     onApproval: grant,
@@ -916,8 +1062,8 @@ test("only an exact host grant advances the audit boundary, including before a l
   assert.ok(grantIndex >= 0 && clearIndex > grantIndex, "The exact grant and its later clearing state must both precede recovery.");
   assert.equal(failed.flow.approval.grant.observedLeafId, failed.client.entriesLog[clearIndex].id);
   assert.deepEqual(failed.client.entryPageCalls, [null, failed.flow.approval.request.entryWatermark]);
-  assert.deepEqual(failed.audit.preApprovalMutations, []);
-  assert.deepEqual(failed.audit.unauthorized, []);
+  assert.deepEqual(fixturePreApprovalMutations(failed.audit), []);
+  assert.deepEqual(failed.audit.violations, []);
 });
 
 test("synthetic approval rejects path escape and immutable-input mutation", () => {
@@ -1016,7 +1162,7 @@ test("grading distinguishes fixture eligibility from an exact current host appro
   assert.equal(assertionFor(unavailableGrantEntry).passed, false);
 
   const staleAuditBoundary = completedExecuteObservation("execute-summary", expected);
-  staleAuditBoundary.operationAudit.approvalEventIndex = null;
+  staleAuditBoundary.fixturePolicyAudit.approvalEventIndex = null;
   assert.equal(assertionFor(staleAuditBoundary).passed, false);
 });
 
@@ -1320,7 +1466,8 @@ test("interview grading reads Pi user message text-block arrays and preserves co
     workflow: { stage: "interview", status: "active" },
     beforeFiles: {},
     afterFiles: {},
-    operationAudit: { unauthorized: [], preApprovalMutations: [] },
+    fixturePolicyAudit: cleanFixturePolicyAudit(),
+    nativeToolAuthorityAudit: cleanNativeToolAuthorityAudit(),
   });
   assert.equal(grade.passed, true);
   assert.equal(grade.assertions.find(item => item.id === "authoritative_correction_was_saved").passed, true);
@@ -1343,23 +1490,627 @@ test("an honestly blocked local-only research contract completes the fixture wit
     workflow: { stage: "research", status: "paused", research: { contract } },
     beforeFiles: snapshots.before,
     afterFiles: snapshots.after,
-    operationAudit: { unauthorized: [], preApprovalMutations: [] },
+    fixturePolicyAudit: cleanFixturePolicyAudit(),
+    nativeToolAuthorityAudit: cleanNativeToolAuthorityAudit(),
   });
   assert.equal(grade.passed, true);
   assert.equal(grade.assertions.find(item => item.id === "honest_research_boundary_recorded").passed, true);
 });
 
-test("operation audit rejects pre-approval mutation and evaluator command drift", () => {
+test("fixture policy audit rejects pre-approval mutation and evaluator command drift", () => {
   const workspace = process.platform === "win32" ? "C:\\fixture" : "/fixture";
   const events = [
     { type: "tool_execution_start", toolName: "write", args: { path: "summary.json" } },
     { type: "tool_execution_start", toolName: "read", args: { path: "input.json" } },
     { type: "tool_execution_start", toolName: "bash", args: { command: "node evaluator.mjs && echo bypass" } },
   ];
-  const audit = auditObservedOperations(events, { fixture: "execute-summary", workspace, approvalEventIndex: 2 });
-  assert.equal(audit.preApprovalMutations.length, 1);
-  assert.equal(audit.unauthorized.length, 2);
-  assert.equal(audit.operations[1].authorized, true);
+  const audit = auditFixturePolicy(events, { fixture: "execute-summary", workspace, approvalEventIndex: 2 });
+  assert.equal(fixturePreApprovalMutations(audit).length, 1);
+  assert.equal(audit.violations.length, 2);
+  assert.equal(audit.calls[1].allowedByFixturePolicy, true);
+});
+
+test("fixture allowance cannot conceal a runtime-blocked native call", () => {
+  const workspace = process.platform === "win32" ? "C:\\fixture" : "/fixture";
+  const scenario = nativeAuthorityScenario({
+    dispatchDecision: "blocked",
+    dispatchCode: "execution_guard_rejected",
+    isError: true,
+    toolName: "write",
+    args: { path: path.join(workspace, "summary.json"), content: "{}" },
+    stateEntryId: "workflow-state",
+    stepId: "S1",
+  });
+  const fixturePolicyAudit = auditFixturePolicy(scenario.events, {
+    fixture: "execute-summary",
+    workspace,
+    approvalEventIndex: 0,
+  });
+  assert.equal(fixturePolicyAudit.calls.length, 1);
+  assert.equal(fixturePolicyAudit.calls[0].allowedByFixturePolicy, true);
+  assert.deepEqual(fixturePolicyAudit.violations, []);
+
+  const nativeToolAuthorityAudit = auditNativeToolAuthority(scenario.events, {
+    entries: scenario.entries,
+    leafId: scenario.leafId,
+    finalCaptureComplete: true,
+  });
+  assert.equal(nativeToolAuthorityAudit.coverage, "complete");
+  assert.equal(nativeToolAuthorityAudit.denialCount, 1);
+  assert.equal(nativeToolAuthorityAudit.invalidationCount, 0);
+  assert.deepEqual(nativeToolAuthorityAudit.issues, []);
+  assert.equal(nativeToolAuthorityAudit.blockedDispatches[0].code, "execution_guard_rejected");
+
+  const observation = completedExecuteObservation("execute-summary", expectedFixtureOutput("execute-summary"));
+  observation.fixturePolicyAudit = fixturePolicyAudit;
+  observation.nativeToolAuthorityAudit = nativeToolAuthorityAudit;
+  const grade = gradeHarnessResult("execute-summary", observation);
+  assert.equal(grade.assertions.length, 17);
+  assert.equal(grade.assertions.find(item => item.id === "fixture_policy_tool_attempts_within_bounds").passed, true);
+  assert.equal(grade.assertions.find(item => item.id === "native_tool_authority_clean").passed, false);
+  assert.equal(grade.passed, false);
+});
+
+test("every native dispatch binds the latest preceding workflow state", () => {
+  const allowed = nativeAuthorityScenario({ dispatchDecision: "dispatch_allowed" });
+  const complete = auditNativeToolAuthority(allowed.events, {
+    entries: allowed.entries,
+    leafId: allowed.leafId,
+    finalCaptureComplete: true,
+  });
+  assert.equal(complete.coverage, "complete");
+
+  const omitted = structuredClone(allowed.entries);
+  omitted.find(entry => entry.id === "authority-dispatch").data.stateEntryId = null;
+  const omittedAudit = auditNativeToolAuthority(allowed.events, {
+    entries: omitted,
+    leafId: omitted.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(omittedAudit.coverage, "invalid");
+  assert.ok(omittedAudit.issues.some(issue => issue.code === "dispatch_state_reference_missing_current"));
+
+  const dispatchIndex = allowed.entries.findIndex(entry => entry.id === "authority-dispatch");
+  const newerState = {
+    id: "workflow-state-newer",
+    type: "custom",
+    customType: "solar-workflow-state-v1",
+    data: { version: 3, id: "synthetic-workflow", stage: "execute", status: "active" },
+  };
+  const staleBinding = linkNativeEntries([
+    ...allowed.entries.slice(0, dispatchIndex),
+    newerState,
+    ...allowed.entries.slice(dispatchIndex),
+  ]);
+  const staleAudit = auditNativeToolAuthority(allowed.events, {
+    entries: staleBinding,
+    leafId: staleBinding.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(staleAudit.coverage, "invalid");
+  assert.ok(staleAudit.issues.some(issue => issue.code === "dispatch_state_reference_not_current"));
+
+  const currentBinding = structuredClone(staleBinding);
+  currentBinding.find(entry => entry.id === "authority-dispatch").data.stateEntryId = newerState.id;
+  const currentAudit = auditNativeToolAuthority(allowed.events, {
+    entries: currentBinding,
+    leafId: currentBinding.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(currentAudit.coverage, "complete");
+  assert.deepEqual(currentAudit.issues, []);
+
+  const noState = structuredClone(allowed.entries.filter(entry => entry.id !== "workflow-state"));
+  noState.find(entry => entry.id === "authority-dispatch").data.stateEntryId = null;
+  const noStateEntries = linkNativeEntries(noState);
+  const noStateAudit = auditNativeToolAuthority(allowed.events, {
+    entries: noStateEntries,
+    leafId: noStateEntries.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(noStateAudit.coverage, "complete");
+  assert.deepEqual(noStateAudit.issues, []);
+});
+
+test("native envelope and grading bindings reject C1 control characters", () => {
+  const c1Control = String.fromCodePoint(0x90);
+  const coverage = {
+    id: "authority-coverage",
+    type: "custom",
+    customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+    data: {
+      version: 1,
+      kind: "coverage",
+      scope: "main_session_native_tool_hooks",
+      dispatch: "every_call",
+      result: "every_execution_allowed_call",
+    },
+  };
+
+  const malformedId = linkNativeEntries([{ ...coverage, id: `authority${c1Control}coverage` }]);
+  const malformedIdAudit = auditNativeToolAuthority([], {
+    entries: malformedId,
+    leafId: malformedId[0].id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(malformedIdAudit.coverage, "invalid");
+  assert.equal(malformedIdAudit.declarationEntryId, null);
+  assert.equal(malformedIdAudit.capturedLeafId, null);
+  assert.ok(malformedIdAudit.issues.some(issue => issue.code === "native_entry_id_malformed"));
+  assert.ok(malformedIdAudit.issues.some(issue => issue.code === "captured_leaf_id_malformed"));
+
+  const malformedParent = linkNativeEntries([
+    coverage,
+    {
+      id: "assistant-with-empty-content",
+      type: "message",
+      message: { role: "assistant", content: [] },
+    },
+  ]);
+  malformedParent[1].parentId = `authority${c1Control}coverage`;
+  const malformedParentAudit = auditNativeToolAuthority([], {
+    entries: malformedParent,
+    leafId: malformedParent.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(malformedParentAudit.coverage, "invalid");
+  assert.ok(malformedParentAudit.issues.some(issue => issue.code === "native_entry_parent_id_malformed"));
+
+  const malformedLeafEntries = linkNativeEntries([coverage]);
+  const malformedLeafAudit = auditNativeToolAuthority([], {
+    entries: malformedLeafEntries,
+    leafId: `authority${c1Control}coverage`,
+    finalCaptureComplete: true,
+  });
+  assert.equal(malformedLeafAudit.coverage, "invalid");
+  assert.equal(malformedLeafAudit.capturedLeafId, null);
+  assert.ok(malformedLeafAudit.issues.some(issue => issue.code === "captured_leaf_id_malformed"));
+
+  const observation = completedExecuteObservation("execute-summary", expectedFixtureOutput("execute-summary"));
+  observation.nativeToolAuthorityAudit.declarationEntryId = `authority${c1Control}declaration`;
+  observation.nativeToolAuthorityAudit.capturedLeafId = `authority${c1Control}leaf`;
+  const bindingAssertion = gradeHarnessResult("execute-summary", observation).assertions
+    .find(item => item.id === "native_tool_authority_clean");
+  assert.equal(bindingAssertion.passed, false);
+
+  const approvalBinding = completedExecuteObservation("execute-summary", expectedFixtureOutput("execute-summary"));
+  approvalBinding.approval.grant.entryId = `grant${c1Control}entry`;
+  approvalBinding.approval.grant.observedLeafId = `grant${c1Control}leaf`;
+  const approvalAssertion = gradeHarnessResult("execute-summary", approvalBinding).assertions
+    .find(item => item.id === "synthetic_plan_was_safely_approved");
+  assert.equal(approvalAssertion.passed, false);
+});
+
+test("non-array assistant content cannot establish zero-call authority coverage", () => {
+  const entries = linkNativeEntries([
+    {
+      id: "authority-coverage",
+      type: "custom",
+      customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+      data: {
+        version: 1,
+        kind: "coverage",
+        scope: "main_session_native_tool_hooks",
+        dispatch: "every_call",
+        result: "every_execution_allowed_call",
+      },
+    },
+    {
+      id: "assistant-malformed",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: { type: "toolCall", id: "hidden-tool-call", name: "read", arguments: { path: "input.json" } },
+      },
+    },
+  ]);
+  const audit = auditNativeToolAuthority([], {
+    entries,
+    leafId: entries.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(audit.coverage, "invalid");
+  assert.equal(audit.denialCount, null);
+  assert.equal(audit.invalidationCount, null);
+  assert.ok(audit.issues.some(issue => issue.code === "assistant_content_not_enumerable"));
+});
+
+test("native authority coverage is fail-closed for legacy, missing, and incomplete capture", () => {
+  const legacy = auditNativeToolAuthority([], {
+    entries: [],
+    leafId: null,
+    finalCaptureComplete: true,
+  });
+  assert.equal(legacy.coverage, "unobserved");
+  assert.deepEqual(legacy.counts, {
+    calls: 0,
+    starts: 0,
+    ends: 0,
+    toolResults: 0,
+    dispatches: 0,
+    requiredResults: 0,
+    resultDecisions: 0,
+  });
+  assert.equal(legacy.denialCount, null);
+  assert.equal(legacy.invalidationCount, null);
+
+  const declaredEntries = linkNativeEntries([{
+    id: "coverage-only",
+    type: "custom",
+    customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+    data: {
+      version: 1,
+      kind: "coverage",
+      scope: "main_session_native_tool_hooks",
+      dispatch: "every_call",
+      result: "every_execution_allowed_call",
+    },
+  }]);
+  const declaredComplete = auditNativeToolAuthority([], {
+    entries: declaredEntries,
+    leafId: declaredEntries[0].id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(declaredComplete.coverage, "complete");
+  assert.equal(declaredComplete.denialCount, 0);
+  assert.equal(declaredComplete.invalidationCount, 0);
+  const failedCollection = auditNativeToolAuthority([], {
+    entries: declaredEntries,
+    leafId: declaredEntries[0].id,
+    finalCaptureComplete: false,
+  });
+  assert.equal(failedCollection.coverage, "incomplete");
+  assert.equal(failedCollection.denialCount, null);
+  assert.ok(failedCollection.issues.some(issue => issue.code === "final_capture_incomplete"));
+  const emptyFailedCollection = auditNativeToolAuthority([], {
+    entries: [],
+    leafId: null,
+    finalCaptureComplete: false,
+  });
+  assert.equal(emptyFailedCollection.coverage, "incomplete");
+  assert.equal(emptyFailedCollection.denialCount, null);
+
+  const partialBlockScenario = nativeAuthorityScenario({
+    dispatchDecision: "blocked",
+    dispatchCode: "execution_guard_rejected",
+    isError: true,
+  });
+  const partialBlock = auditNativeToolAuthority(partialBlockScenario.events, {
+    entries: partialBlockScenario.entries,
+    leafId: partialBlockScenario.leafId,
+    finalCaptureComplete: false,
+  });
+  assert.equal(partialBlock.coverage, "incomplete");
+  assert.equal(partialBlock.blockedDispatches.length, 1);
+  assert.equal(partialBlock.denialCount, null);
+  const partialInvalidationScenario = nativeAuthorityScenario({
+    resultDecision: "invalidated",
+    resultCode: "authority_recheck_failed",
+    isError: true,
+  });
+  const partialInvalidation = auditNativeToolAuthority(partialInvalidationScenario.events, {
+    entries: partialInvalidationScenario.entries,
+    leafId: partialInvalidationScenario.leafId,
+    finalCaptureComplete: false,
+  });
+  assert.equal(partialInvalidation.coverage, "incomplete");
+  assert.equal(partialInvalidation.invalidatedResults.length, 1);
+  assert.equal(partialInvalidation.invalidationCount, null);
+
+  const missingDispatchScenario = nativeAuthorityScenario();
+  const missingDispatchEntries = linkNativeEntries(missingDispatchScenario.entries.filter(entry =>
+    entry.id !== "authority-dispatch" && entry.id !== "authority-result"));
+  const missingDispatch = auditNativeToolAuthority(missingDispatchScenario.events, {
+    entries: missingDispatchEntries,
+    leafId: missingDispatchEntries.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(missingDispatch.coverage, "incomplete");
+  assert.equal(missingDispatch.denialCount, null);
+  assert.ok(missingDispatch.issues.some(issue => issue.code === "dispatch_receipt_missing"));
+
+  const missingResultEntries = linkNativeEntries(missingDispatchScenario.entries.filter(entry =>
+    entry.id !== "authority-result"));
+  const missingResultDecision = auditNativeToolAuthority(missingDispatchScenario.events, {
+    entries: missingResultEntries,
+    leafId: missingResultEntries.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(missingResultDecision.coverage, "incomplete");
+  assert.equal(missingResultDecision.invalidationCount, null);
+  assert.ok(missingResultDecision.issues.some(issue => issue.code === "execution_result_receipt_missing"));
+
+  const completeObservation = completedExecuteObservation("execute-summary", expectedFixtureOutput("execute-summary"));
+  const completeGrade = gradeHarnessResult("execute-summary", completeObservation);
+  assert.equal(completeGrade.passed, true);
+  assert.equal(completeGrade.assertions.length, 17);
+  const missingFixtureAudit = structuredClone(completeObservation);
+  delete missingFixtureAudit.fixturePolicyAudit;
+  assert.equal(gradeHarnessResult("execute-summary", missingFixtureAudit).passed, false);
+  const missingNativeAudit = structuredClone(completeObservation);
+  delete missingNativeAudit.nativeToolAuthorityAudit;
+  assert.equal(gradeHarnessResult("execute-summary", missingNativeAudit).passed, false);
+});
+
+test("native authority audit rejects malformed receipts, bad ancestry, references, ordering, duplicates, and orphans", () => {
+  const baseline = nativeAuthorityScenario();
+  const authorityResultIndex = baseline.entries.findIndex(entry => entry.id === "authority-result");
+  const duplicateDispatch = structuredClone(baseline.entries.find(entry => entry.id === "authority-dispatch"));
+  duplicateDispatch.id = "authority-dispatch-duplicate";
+
+  const lateStateDispatch = structuredClone(baseline.entries.find(entry => entry.id === "authority-dispatch"));
+  lateStateDispatch.data.stateEntryId = "workflow-state-late";
+  const lateState = {
+    id: "workflow-state-late",
+    type: "custom",
+    customType: "solar-workflow-state-v1",
+    data: { version: 3, id: "synthetic-workflow", stage: "execute", status: "active" },
+  };
+
+  const orphanResult = {
+    id: "authority-result-orphan",
+    type: "custom",
+    customType: NATIVE_TOOL_AUTHORITY_ENTRY,
+    data: {
+      version: 1,
+      kind: "result",
+      call: { assistantEntryId: "assistant-orphan", toolCallId: "tool-call-orphan", toolName: "read" },
+      decision: "current",
+      code: null,
+    },
+  };
+  const duplicateNativeResult = structuredClone(baseline.entries.find(entry => entry.id === "native-tool-result"));
+  duplicateNativeResult.id = "native-tool-result-duplicate";
+  const duplicateAssistant = structuredClone(baseline.entries.find(entry => entry.id === "assistant-call"));
+  duplicateAssistant.id = "assistant-call-duplicate";
+  const malformedDispatch = structuredClone(baseline.entries.find(entry => entry.id === "authority-dispatch"));
+  malformedDispatch.id = "authority-dispatch-malformed";
+  malformedDispatch.data.untrustedExtraField = true;
+  const wrongNameDispatch = structuredClone(baseline.entries.find(entry => entry.id === "authority-dispatch"));
+  wrongNameDispatch.data.call.toolName = "write";
+  const brokenAncestry = structuredClone(baseline.entries);
+  brokenAncestry.find(entry => entry.id === "authority-dispatch").parentId = "missing-parent";
+  const duplicateCoverage = structuredClone(baseline.entries.find(entry => entry.id === "authority-coverage"));
+  duplicateCoverage.id = "authority-coverage-duplicate";
+  const offBranchDispatch = structuredClone(baseline.entries.find(entry => entry.id === "authority-dispatch"));
+  offBranchDispatch.id = "authority-dispatch-off-branch";
+  offBranchDispatch.parentId = "assistant-call";
+  offBranchDispatch.timestamp = "2026-09-14T22:00:04.500Z";
+  const offBranchEntries = structuredClone(baseline.entries);
+  offBranchEntries.splice(-1, 0, offBranchDispatch);
+
+  const variants = [
+    {
+      label: "strict malformed receipt",
+      entries: linkNativeEntries([
+        ...baseline.entries.slice(0, authorityResultIndex),
+        malformedDispatch,
+        ...baseline.entries.slice(authorityResultIndex),
+      ]),
+      issue: "native_authority_receipt_malformed",
+    },
+    {
+      label: "broken ancestry",
+      entries: brokenAncestry,
+      issue: "native_entry_parent_missing_or_ambiguous",
+    },
+    {
+      label: "late coverage declaration",
+      entries: linkNativeEntries([
+        baseline.entries.find(entry => entry.id === "workflow-state"),
+        baseline.entries.find(entry => entry.id === "assistant-call"),
+        baseline.entries.find(entry => entry.id === "authority-coverage"),
+        ...baseline.entries.filter(entry => !["workflow-state", "assistant-call", "authority-coverage"].includes(entry.id)),
+      ]),
+      issue: "assistant_tool_call_before_coverage_declaration",
+    },
+    {
+      label: "multiple coverage declarations",
+      entries: linkNativeEntries([
+        baseline.entries[0],
+        duplicateCoverage,
+        ...baseline.entries.slice(1),
+      ]),
+      issue: "multiple_coverage_declarations",
+    },
+    {
+      label: "authority receipt off captured branch",
+      entries: offBranchEntries,
+      issue: "native_authority_receipt_off_captured_branch",
+    },
+    {
+      label: "wrong tool name reference",
+      entries: linkNativeEntries(baseline.entries.map(entry =>
+        entry.id === "authority-dispatch" ? wrongNameDispatch : entry)),
+      issue: "dispatch_call_reference_mismatch",
+    },
+    {
+      label: "duplicate dispatch",
+      entries: linkNativeEntries([
+        ...baseline.entries.slice(0, authorityResultIndex),
+        duplicateDispatch,
+        ...baseline.entries.slice(authorityResultIndex),
+      ]),
+      issue: "duplicate_dispatch_receipt",
+    },
+    {
+      label: "state reference after dispatch",
+      entries: linkNativeEntries([
+        ...baseline.entries.filter(entry => !["authority-dispatch", "authority-result", "native-tool-result"].includes(entry.id)),
+        lateStateDispatch,
+        lateState,
+        baseline.entries.find(entry => entry.id === "authority-result"),
+        baseline.entries.find(entry => entry.id === "native-tool-result"),
+      ]),
+      issue: "dispatch_state_reference_not_before_dispatch",
+    },
+    {
+      label: "result receipt before dispatch",
+      entries: linkNativeEntries([
+        ...baseline.entries.filter(entry => ["authority-coverage", "workflow-state", "assistant-call"].includes(entry.id)),
+        baseline.entries.find(entry => entry.id === "authority-result"),
+        baseline.entries.find(entry => entry.id === "authority-dispatch"),
+        baseline.entries.find(entry => entry.id === "native-tool-result"),
+      ]),
+      issue: "result_receipt_not_after_dispatch",
+    },
+    {
+      label: "orphan receipt",
+      entries: linkNativeEntries([
+        ...baseline.entries.slice(0, -1),
+        orphanResult,
+        baseline.entries.at(-1),
+      ]),
+      issue: "orphan_result_receipt",
+    },
+    {
+      label: "duplicate native result",
+      entries: linkNativeEntries([...baseline.entries, duplicateNativeResult]),
+      issue: "duplicate_native_tool_result",
+    },
+    {
+      label: "duplicate assistant call identity",
+      entries: linkNativeEntries([
+        ...baseline.entries.slice(0, 3),
+        duplicateAssistant,
+        ...baseline.entries.slice(3),
+      ]),
+      issue: "duplicate_assistant_tool_call_id",
+    },
+  ];
+
+  for (const variant of variants) {
+    const audit = auditNativeToolAuthority(baseline.events, {
+      entries: variant.entries,
+      leafId: variant.entries.at(-1).id,
+      finalCaptureComplete: true,
+    });
+    assert.equal(audit.coverage, "invalid", variant.label);
+    assert.equal(audit.denialCount, null, variant.label);
+    assert.equal(audit.invalidationCount, null, variant.label);
+    assert.ok(audit.issues.some(issue => issue.code === variant.issue), variant.label);
+  }
+});
+
+test("native authority audit reconciles start/end event cardinality, identity, and order", () => {
+  const baseline = nativeAuthorityScenario();
+  const start = baseline.events.find(event => event.type === "tool_execution_start");
+  const end = baseline.events.find(event => event.type === "tool_execution_end");
+  const wrongStart = { ...start, toolName: "write" };
+  const wrongEnd = { ...end, toolName: "write" };
+  const variants = [
+    {
+      label: "missing start",
+      events: [end],
+      coverage: "incomplete",
+      issue: "native_tool_start_missing",
+    },
+    {
+      label: "duplicate start",
+      events: [start, structuredClone(start), end],
+      coverage: "invalid",
+      issue: "duplicate_native_tool_event",
+    },
+    {
+      label: "mismatched start",
+      events: [wrongStart, end],
+      coverage: "invalid",
+      issue: "native_tool_event_name_mismatch",
+    },
+    {
+      label: "missing end",
+      events: [start],
+      coverage: "incomplete",
+      issue: "native_tool_end_missing",
+    },
+    {
+      label: "duplicate end",
+      events: [start, end, structuredClone(end)],
+      coverage: "invalid",
+      issue: "duplicate_native_tool_event",
+    },
+    {
+      label: "mismatched end",
+      events: [start, wrongEnd],
+      coverage: "invalid",
+      issue: "native_tool_event_name_mismatch",
+    },
+    {
+      label: "reversed start and end",
+      events: [end, start],
+      coverage: "invalid",
+      issue: "native_tool_end_not_after_start",
+    },
+  ];
+
+  for (const variant of variants) {
+    const audit = auditNativeToolAuthority(variant.events, {
+      entries: baseline.entries,
+      leafId: baseline.leafId,
+      finalCaptureComplete: true,
+    });
+    assert.equal(audit.coverage, variant.coverage, variant.label);
+    assert.equal(audit.denialCount, null, variant.label);
+    assert.equal(audit.invalidationCount, null, variant.label);
+    assert.ok(audit.issues.some(issue => issue.code === variant.issue), variant.label);
+  }
+
+  const missingResultEntries = linkNativeEntries(
+    baseline.entries.filter(entry => entry.id !== "native-tool-result"),
+  );
+  const missingResultAudit = auditNativeToolAuthority(baseline.events, {
+    entries: missingResultEntries,
+    leafId: missingResultEntries.at(-1).id,
+    finalCaptureComplete: true,
+  });
+  assert.equal(missingResultAudit.coverage, "incomplete");
+  assert.equal(missingResultAudit.denialCount, null);
+  assert.equal(missingResultAudit.invalidationCount, null);
+  assert.ok(missingResultAudit.issues.some(issue => issue.code === "native_tool_result_missing"));
+});
+
+test("ordinary tool errors stay separate from authority invalidation", () => {
+  const ordinaryError = nativeAuthorityScenario({ isError: true });
+  const currentAudit = auditNativeToolAuthority(ordinaryError.events, {
+    entries: ordinaryError.entries,
+    leafId: ordinaryError.leafId,
+    finalCaptureComplete: true,
+  });
+  assert.equal(currentAudit.coverage, "complete");
+  assert.deepEqual(currentAudit.blockedDispatches, []);
+  assert.deepEqual(currentAudit.invalidatedResults, []);
+  assert.equal(currentAudit.denialCount, 0);
+  assert.equal(currentAudit.invalidationCount, 0);
+  assert.equal(JSON.stringify(currentAudit).includes("ordinary tool error"), false);
+  const currentObservation = completedExecuteObservation("execute-summary", expectedFixtureOutput("execute-summary"));
+  currentObservation.nativeToolAuthorityAudit = currentAudit;
+  assert.equal(
+    gradeHarnessResult("execute-summary", currentObservation).assertions
+      .find(item => item.id === "native_tool_authority_clean").passed,
+    true,
+  );
+
+  const invalidated = nativeAuthorityScenario({
+    resultDecision: "invalidated",
+    resultCode: "authority_recheck_failed",
+    isError: true,
+  });
+  const invalidatedAudit = auditNativeToolAuthority(invalidated.events, {
+    entries: invalidated.entries,
+    leafId: invalidated.leafId,
+    finalCaptureComplete: true,
+  });
+  assert.equal(invalidatedAudit.coverage, "complete");
+  assert.equal(invalidatedAudit.denialCount, 0);
+  assert.equal(invalidatedAudit.invalidationCount, 1);
+  assert.equal(invalidatedAudit.invalidatedResults[0].code, "authority_recheck_failed");
+  const invalidatedObservation = completedExecuteObservation("execute-summary", expectedFixtureOutput("execute-summary"));
+  invalidatedObservation.nativeToolAuthorityAudit = invalidatedAudit;
+  assert.equal(
+    gradeHarnessResult("execute-summary", invalidatedObservation).assertions
+      .find(item => item.id === "native_tool_authority_clean").passed,
+    false,
+  );
 });
 
 test("observed accounting keeps main assistant usage separate from role attempts and receipts", () => {

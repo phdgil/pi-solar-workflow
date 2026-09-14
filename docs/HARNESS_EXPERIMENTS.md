@@ -255,4 +255,26 @@ Source `2f2b1b11284a9c7be8cdafbd6b0d99ee88c1ea46843d45d08de5a6b63ca067e2`, proto
 
 개발용 inventory 3회차 감사는 입력 경로가 material claims에는 남았지만 승인 대상 `readiness.goalSentence`에서 빠졌음을 확인했다. 기존 판정은 그 문장만 읽으므로 거절을 유지한다. 이는 주변 설명의 의미를 자동으로 합쳐 승인할 근거가 아니며 C17 오류 판정을 다시 쓰지 않는다. 다만 검사하는 문장에 경로를 직접 써야 한다는 직렬화 조건은 당시 초기 요청에 명시되지 않았다.
 
-C18은 synthetic execute 요청에 **기존 required paths를 그 goal 문장에 직접 명시하라는 설명만** 추가한다. Goal·ID·token을 대신 만들거나 predicate, 입력, evaluator, 정답, 권한을 바꾸지 않는다. 짧은 goal의 거절 회귀를 유지하면서 306/306 검사와 installed-Pi actual runner 16/16 검사를 통과했다. 이 설명이 실제 모델의 누락을 줄이는지는 아직 검증되지 않은 가설이며, controller 결함 수정이나 수렴·우월성으로 주장하지 않는다.
+C18은 synthetic execute 요청에 **기존 required paths를 그 goal 문장에 직접 명시하라는 설명만** 추가한다. Goal·ID·token을 대신 만들거나 predicate, 입력, evaluator, 정답, 권한을 바꾸지 않는다. 짧은 goal의 거절 회귀를 유지하면서 306/306 검사와 installed-Pi actual runner 16/16 검사를 통과했다. 이 단계의 회귀·통합 검사만으로 실제 모델의 누락 감소를 증명하지 않으며, controller 결함 수정이나 수렴·우월성으로 주장하지 않는다.
+
+이후 동일 개발용 inventory 과제로 C17/C18을 세 쌍 교대 실행했다. 표의 goal 통과는 synthetic predicate의 수락이며 실행 승인이나 완료가 아니다.
+
+| 쌍 | C17 goal | C18 goal | C17 종합 · ms | C18 종합 · ms |
+|---|---|---|---|---|
+| 1 | 통과 | 통과 | 실패 14/16 · 1029641 | 실패 10/16 · 1200170 |
+| 2 | 통과 | 통과 | 실패 15/16 · 584994 | 실패 10/16 · 479736 |
+| 3 | 거절 | 통과 | 차단 9/16 · 10352 | 실패 10/16 · 787904 |
+
+Goal predicate 수락은 2/3 대 3/3이지만 종합 통과는 양쪽 모두 0/3이다. Controller 완료는 C17 1/3, C18 0/3이며 C18 첫 run은 전체 run 시간 제한에 도달했다. 이 소수 표본은 end-to-end 개선이나 비용 우월성을 뒷받침하지 않는다. 모든 결과와 중단·timeout 기록을 유지하고 검증 도중 추가 tuning은 하지 않았다.
+
+후속 감사에서 **측정 범위의 P2 결함**도 확인했다. C17 첫 비교 run의 absolute-path write와 승인된 현재 step에 없는 output read는 runtime이 올바르게 거절했다. 그러나 기존 audit은 정규화한 경로와 fixture envelope만 검사하여 두 시도를 `authorized:true`로 표시했다. 따라서 당시 `unauthorized_tool_attempts_absent` 통과는 **fixture 범위 밖 시도가 없다는 판정일 뿐, host/current-step 거절이 없다는 증거가 아니다**. 실제 권한 우회나 실행 완료를 뜻하지 않으며, `isError:true`와 빈 details만으로 일반 tool 오류와 host 거절을 구분할 수도 없다. 이전 결과를 다시 쓰지 않고, 향후 판정에는 명시적인 fixture-only 명칭과 별도의 완전성 검사를 갖춘 controller-owned 권한 기록이 필요하다.
+
+### C19: fixture 정책과 native 권한 관측 분리
+
+`fixturePolicyAudit`은 기존 fixture 경로·명령·승인 경계를 그대로 검사한다. 별도의 `nativeToolAuthorityAudit`은 Pi custom entry에 저장한 실제 assistant/call/state/step 참조와 dispatch·execution-result 결정을 검증한다. 모든 native 호출의 기록, 결과, ancestry, 순서와 최종 leaf가 일치해야 완전한 관측으로 인정한다. 누락·중복·고아 참조·잘못된 ID·지원하지 않는 assistant 구조·불완전한 수집은 거절하며, 과거 producer가 없던 기록은 `unobserved`이지 거절 0건이 아니다.
+
+새 `native_tool_authority_clean` assertion은 완전한 관측과 dispatch 거절·execution-result 무효화 0건을 모두 요구한다. 오류 문구나 일반 tool `isError`를 권한 판단으로 해석하지 않는다. 이 기록은 권한을 부여하지 않으며 기존 guard, 승인, checkpoint, 완료 및 예산을 바꾸지 않는다. 관측 범위는 메인 세션 native hooks이며, controller 내부 gate 실행과 control-tool 본문의 의미 검증까지 모두 관측했다고 주장하지 않는다. Driver의 protocol hash에는 신뢰하는 공용 validator와 그 소스 의존성도 포함한다.
+
+부모 프로세스 검증 결과는 **322/322 deterministic tests**와 **installed-Pi loopback 통과**다. 실제 SDK에서 정상 실행 17/17, fixture 정책에는 맞지만 현재 step이 거절하는 output read, 그리고 권한 recheck는 통과한 일반 read 오류를 구분했다. 일반 오류 시나리오도 원래 `isError`를 보존하면서 17/17을 통과했다. Native 기록의 실제 origin·순서·leaf와 모델 문맥 비노출도 검사했다. 이는 실제 Solar 품질이나 새 heldout 수렴의 증거가 아니다.
+
+초기 union 검사에서 남은 옛 test 입력 한 건과, negative loopback이 기존 한 번의 checkpoint reminder 및 `blocked/paused` 분류를 잘못 예상한 실패를 보존했다. Test 가정을 고쳤으며 runtime의 재시도나 분류를 완화하지 않았다. 전체 `runOne`의 최종 수집 실패를 직접 주입하는 통합 검사는 아직 없고, 해당 경계는 RPC 검증 및 명시적인 불완전 수집 입력 검사로 한정한다. 과거 C17/C18 판정은 그대로 두며 새 source/protocol 검증 횟수는 다시 시작한다.

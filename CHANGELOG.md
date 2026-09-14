@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separated fixture-policy allowance from native host-tool authority evidence. Pi-owned call/state/result receipts now support fail-closed coverage auditing without granting permission or changing guards, budgets or completion. Legacy fixture-only results remain unchanged; incomplete evidence cannot establish zero denials.
 - Made the synthetic execute request explicitly disclose the existing goal-sentence path requirement. Confirmation predicates, data, oracles and permissions remain unchanged; this is a protocol-clarity experiment, not a demonstrated live reliability improvement.
 - Preserved blocked finding obligations through resume and later plan revisions, and moved reviewer semantic checks inside existing bounded repairs. Repair diagnostics and complete prompts now respect UTF-8 limits while retaining original evidence. Exact-session protection takes precedence over the research exception; stopped workflows stay dormant across workspace changes.
 - Bound complete main-role instructions at every supported provider request, including automatic continuations, with idempotent host frames and terminal-state isolation. Interview reads now exclude actual private/controller identities and resolver aliases while preserving legitimate evidence. Repair context preserves rejected output across transport failures and trailing whitespace without increasing retries or weakening validation.
