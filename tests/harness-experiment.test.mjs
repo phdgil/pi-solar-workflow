@@ -398,6 +398,24 @@ test("synthetic approval accepts only the exact allowlisted local authority", ()
   assert.ok(nonExecute.violations.includes("case_not_on_synthetic_execute_allowlist"));
 });
 
+test("execute requests disclose literal goal paths without manufacturing confirmation", () => {
+  for (const { name, kind } of listHarnessFixtures()) {
+    const fixture = getHarnessFixture(name);
+    const marker = "Your saved readiness.goalSentence must explicitly name these settled paths verbatim:";
+    if (kind !== "execute") {
+      assert.equal(fixture.initialPrompt.includes(marker), false);
+      continue;
+    }
+    assert.ok(fixture.initialPrompt.includes(`${marker} ${fixture.goalPolicy.requiredPaths.join(", ")}.`));
+    assert.equal(fixture.initialPrompt.split(marker).length, 2);
+    assert.equal(getHarnessFixture(name).initialPrompt, fixture.initialPrompt);
+  }
+  const abbreviated = validateFixtureGoal("execute-inventory-heldout", "Generate inventory-report.json matching the evaluator's exact expected structure and values, then verify with node evaluator.mjs.");
+  assert.equal(abbreviated.accepted, false);
+  assert.ok(abbreviated.violations.includes("goal_omits_required_path:inventory.json"));
+  assert.equal(validateFixtureGoal("execute-inventory-heldout", "Read inventory.json and create only JSON inventory-report.json.").accepted, true);
+});
+
 test("programmatic confirmation rejects drifted paths, format, and mutation scope", () => {
   const exact = validateFixtureGoal("execute-summary", "Read input.json and create only JSON summary.json.");
   assert.equal(exact.accepted, true);

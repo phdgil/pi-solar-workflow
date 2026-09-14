@@ -470,7 +470,10 @@ export function getHarnessFixture(name) {
   const fixture = FIXTURES[name];
   if (!fixture) throw new Error(`Unknown harness case: ${String(name)}`);
   const result = structuredClone(fixture);
-  if (result.kind === "execute") result.initialPrompt += " For this synthetic case, use ExecutionContractV3 domain software; the acceptance harness requires the software review route.";
+  if (result.kind === "execute") {
+    result.initialPrompt += " For this synthetic case, use ExecutionContractV3 domain software; the acceptance harness requires the software review route.";
+    result.initialPrompt += ` Your saved readiness.goalSentence must explicitly name these settled paths verbatim: ${result.goalPolicy.requiredPaths.join(", ")}. The automatic confirmation check reads that sentence alone, not neighboring claims or evaluator code. Preserve all task and authority boundaries.`;
+  }
   return result;
 }
 

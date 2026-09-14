@@ -232,3 +232,27 @@ C16 corrected-product의 planning 진단도 593237 ms / 8/12로 실패했다. Pl
 C17 첫 회차의 중간 관측에서는 research가 11766 ms / 11/11, interview가 320999 ms / 12/12로 통과했고, planning은 722379 ms / 8/12로 실패했다. Summary는 실제 승인과 실행 완료에 도달했지만 942325 ms / 15/16 실패로 유지한다. Planner 한 번과 Critic 두 번의 timeout이 남아 `provider_failures_absent`를 통과하지 못했다.
 
 이 summary에서는 새 protocol의 **실제 Solar host grant**가 관측됐다. 발행된 `harness-8528` 요청의 직전 watermark는 보존 이력 index 73, 정확한 workflow/revision/artifact table의 execute/active grant는 index 74, 관측 leaf는 index 102였다. 독립 완료 판정의 현행 권한, 실제 plan bytes, 모든 step/gate, final/acceptance manifests와 finalReview digest 검사가 모두 통과했다. 이는 loopback만이 아닌 live 승인·완료 경로의 증거지만, 실패 run을 성공으로 재등급하거나 전체 matrix 수렴으로 간주하지 않는다.
+
+### C17 동결 matrix의 세 회차 시도
+
+Source `2f2b1b11284a9c7be8cdafbd6b0d99ee88c1ea46843d45d08de5a6b63ca067e2`, protocol `3d6c14e5b5e9af9c84c373c538dbf7c29947716afa3628012758522117aef6a9`를 유지했다. 아래 셀은 판정, assertion 수, 경과 ms다.
+
+| 사례 | 1회 | 2회 | 3회 |
+|---|---|---|---|
+| research-local | 통과 11/11 · 11766 | 통과 11/11 · 13156 | 통과 11/11 · 16400 |
+| interview-correction | 통과 12/12 · 320999 | 실패 11/12 · 264399 | 통과 12/12 · 158384 |
+| plan-software | 실패 8/12 · 722379 | 실패 8/12 · 722595 | 실패 11/12 · 351559 |
+| execute-summary | 실패 15/16 · 942325 | 실패 15/16 · 580212 | 실패 10/16 · 620759 |
+| execute-inventory-heldout (개발) | 실패 10/16 · 784617 | 실패 10/16 · 646221 | 차단 9/16 · 39332 |
+| execute-module-alias-heldout | 외부 중단, 최종 판정 없음 | 차단 9/16 · 36529 | 실패 10/16 · 798701 |
+| execute-access-matrix-heldout | 실패 10/16 · 415303 | 차단 9/16 · 16584 | 실패 10/16 · 755313 |
+
+총 21회 시도 중 최종 결과는 20건이다: 통과 5건, 실패 12건, 차단 3건이며 별도로 외부 중단 1건이 있다. 최초 batch monitor는 요청한 27000초 대신 도구의 실제 3600초 제한으로 종료돼 첫 module-alias 시도를 중단했다. 살아 있는 validation process가 없고 최종 result가 없는 것을 확인했으며 raw artifacts를 보존했다. 그 경로를 다시 실행하거나 provider 실패로 분류하지 않고, 이후는 1300초 이하의 사례별 호출로 이어 갔다. 따라서 첫 회차를 완전한 일곱 사례 결과로 주장하지 않는다.
+
+실패 12건 중 11건은 role interruption, interview 2회차 한 건은 fixture 밖 read 시도 두 건 때문이다. 해당 read들은 tool error로 끝났다. 차단 세 건은 `goal_semantics_not_fixture_exact`였다. 실패·차단과 외부 중단을 모두 포함하면 clean 회차 및 연속 clean 회차는 **0**이다. 두 새 heldout은 이제 소비됐으며, 검증 중 source/protocol tuning이나 과거 성공 횟수 이월은 하지 않았다. 종료 후 26개 동결 파일과 모든 최종 결과의 source/protocol/case 식별을 재확인했다.
+
+### C18: 명시적인 synthetic goal 조건 실험
+
+개발용 inventory 3회차 감사는 입력 경로가 material claims에는 남았지만 승인 대상 `readiness.goalSentence`에서 빠졌음을 확인했다. 기존 판정은 그 문장만 읽으므로 거절을 유지한다. 이는 주변 설명의 의미를 자동으로 합쳐 승인할 근거가 아니며 C17 오류 판정을 다시 쓰지 않는다. 다만 검사하는 문장에 경로를 직접 써야 한다는 직렬화 조건은 당시 초기 요청에 명시되지 않았다.
+
+C18은 synthetic execute 요청에 **기존 required paths를 그 goal 문장에 직접 명시하라는 설명만** 추가한다. Goal·ID·token을 대신 만들거나 predicate, 입력, evaluator, 정답, 권한을 바꾸지 않는다. 짧은 goal의 거절 회귀를 유지하면서 306/306 검사와 installed-Pi actual runner 16/16 검사를 통과했다. 이 설명이 실제 모델의 누락을 줄이는지는 아직 검증되지 않은 가설이며, controller 결함 수정이나 수렴·우월성으로 주장하지 않는다.
