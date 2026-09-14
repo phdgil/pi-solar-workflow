@@ -141,7 +141,7 @@ Each creation-plus-prompt attempt has one 180,000 ms deadline. The controller re
 
 A repair consumes one session attempt and one repair. These counters do not represent HTTP calls, provider retries, tokens, throughput, rate limits, or billing quotas.
 
-Repair context retains the latest completed rejected response and its semantic error across later no-output failures, while `repairOf` still identifies the immediately preceding eligible attempt. Prior-output context remains bounded to 16,000 characters: shorter responses remain verbatim; larger responses use explicitly labeled verbatim ranges prioritizing contract, coverage, resolutions, and tail content. Omitted ranges are disclosed, malformed JSON stays untrusted text, and the stored original output is never rewritten.
+Repair context retains the latest completed rejected response and its semantic error across later no-output failures, while `repairOf` still identifies the immediately preceding eligible attempt. Prior-output context remains bounded to 16,000 characters: responses that fit remain verbatim; larger responses use explicitly labeled verbatim ranges prioritizing contract, coverage, resolutions, and tail content. Each presented diagnostic is limited to 8,192 UTF-8 bytes, and the entire repair prompt remains within 65,536 UTF-8 bytes. A tighter remaining byte allocation may further reduce excerpts with explicit omission labels. The original base prompt is never cut; an envelope that cannot fit fails explicitly. Full errors and original outputs remain in retained records, malformed JSON stays untrusted text, and no response is autocompleted.
 
 Only an assistant response with `stopReason: "stop"` can produce a role output receipt. Token-limited (`length`), missing, aborted, or unknown completion states fail closed even if the visible bytes resemble complete JSON. A receipt still does not replace independent contract validation or the required reviews.
 
@@ -151,7 +151,11 @@ Initial prerequisite limitations remain explicit in feasibility and remaining un
 
 The Approach Reviewer and Critic see the full current plan bundle in distinct contexts. The former checks domain-specific approach and feasibility; the latter checks whole-plan scope, risk, verification, and acceptance. Their receipts bind role, context, input revision, plan revision, model, Max thinking, attempt, and output revision. Because all roles use Solar Pro4 Max and controller-selected evidence, the reviews are correlated signals, not independent proof.
 
+Reviewer role, revision, domain, coverage, and cross-review finding-ID checks run inside the existing bounded repair callback. Successful parsing preserves the original JSON value for exact raw-output binding; semantic normalization does not replace the submitted bytes. Freshness, receipt, and authority checks still run again at commit.
+
 Every actionable finding is mapped to a changed plan location or marked blocked. A material finding requires a fresh Planner attempt, a full plan revision, resolution mapping, and fresh reviews by both reviewers. A stale, malformed, failed, blocked, or unresolved review cannot advance. Reviewers do not manufacture ceremonial findings when the plan already resolves a probe.
+
+Blocked findings remain active after pause/resume and appear in the next schema, provenance, and resolution requirements. Reusing the blocked plan with empty mappings cannot erase them. Resolution requires a genuinely changed revision with the current from/to lineage; prior mappings remain in history.
 
 `solar_plan_ready(...)` validates and stages only the fully reviewed current digest. For executable work, the user reviews it before `/solar-workflow approve <revision>`. For planning-only work, the same complete parse/review/revision cycle ends at `planning_complete`; no approval token, execute tool, or execution follow-up is emitted.
 

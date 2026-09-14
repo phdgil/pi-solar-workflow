@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserved blocked finding obligations through resume and later plan revisions, and moved reviewer semantic checks inside existing bounded repairs. Repair diagnostics and complete prompts now respect UTF-8 limits while retaining original evidence. Exact-session protection takes precedence over the research exception; stopped workflows stay dormant across workspace changes.
 - Bound complete main-role instructions at every supported provider request, including automatic continuations, with idempotent host frames and terminal-state isolation. Interview reads now exclude actual private/controller identities and resolver aliases while preserving legitimate evidence. Repair context preserves rejected output across transport failures and trailing whitespace without increasing retries or weakening validation.
 - Strengthened independent experiment grading with observed reserved disk-plan bytes, current completion manifests, and exact observed host approval rather than fixture eligibility. Frozen failures remain unchanged; these corrections reset validation rather than retroactively creating successful runs.
 - Added a bounded structured Planner wire with native Solar JSON Schema, deterministic Markdown rendering and raw-output/plan/resolution binding. Active workflow calls disable parallel tool generation; configured tool inventory is checked without granting authority. The separate user-authorized 168-hour campaign records continued failures and does not establish convergence or superiority.

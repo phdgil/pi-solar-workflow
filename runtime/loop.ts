@@ -928,6 +928,8 @@ export function beginPlanRevision(workflow: any, artifact: { path: string; text:
   const descriptorChanged = Boolean(current.artifactTableRevision && current.artifactTableRevision !== tableRevision);
   const results = descriptorChanged ? {} : reusableResults(current, contract, tableRevision);
   const blocked = resolutions.some(item => item.status === "blocked");
+  const blockedFindingIds = new Set(resolutions.filter(item => item.status === "blocked").map(item => item.findingId));
+  const reviewFindings = previousFindings.filter((finding: PlanFinding) => blockedFindingIds.has(finding.id));
   const oldPlanning = current.planning ? {
     planRevision: current.revision,
     artifactTableRevision: current.artifactTableRevision,
@@ -942,7 +944,7 @@ export function beginPlanRevision(workflow: any, artifact: { path: string; text:
     revisionOrdinal: current.budgets.reviewRevisions + 1,
     reviewReceipts: { planner: plannerReceipt },
     reviews: {},
-    reviewFindings: [],
+    reviewFindings,
     findingResolutions: resolutions,
     inputRevision: options.inputRevision,
     plannerOutputRevision: plannerReceipt.outputRevision,
@@ -987,14 +989,23 @@ export function beginPlanRevision(workflow: any, artifact: { path: string; text:
   };
 }
 
+export function validateCurrentPlanReview(workflow: any, reviewValue: unknown, role: "approach_reviewer" | "critic"): PlanReview {
+  const current = initializeLoop(workflow);
+  if (current.stage !== "plan" || current.status !== "reviewing_plan" || current.planning?.revisionState !== "awaiting_reviews") throw new Error("No current plan revision is accepting isolated reviews.");
+  if (!(role === "approach_reviewer" || role === "critic")) throw new Error("Validate only an Approach Reviewer or Critic review here.");
+  if (current.planning.reviews[role]) throw new Error(`${role} already reviewed this exact plan revision.`);
+  const review = validatePlanReview(reviewValue, { role, planRevision: current.revision, contract: current.plan.contract });
+  if (!Array.isArray(current.planning.reviewFindings)) throw new Error("Current Planner review findings must be an array.");
+  if (review.findings.some(finding => current.planning.reviewFindings.some((existing: any) => existing.id === finding.id))) throw new Error("Finding IDs must be unique across both current reviewers.");
+  return review;
+}
+
 export function recordPlanReview(workflow: any, reviewValue: unknown, receiptValue: unknown, inputRevision: string, visibleOutput: string) {
   const current = initializeLoop(workflow);
-  if (current.status !== "reviewing_plan" || current.planning?.revisionState !== "awaiting_reviews") throw new Error("No current plan revision is accepting isolated reviews.");
   const role = (reviewValue as any)?.role;
   if (!(role === "approach_reviewer" || role === "critic")) throw new Error("Record only an Approach Reviewer or Critic review here.");
-  if (current.planning.reviews[role]) throw new Error(`${role} already reviewed this exact plan revision.`);
+  const review = validateCurrentPlanReview(current, reviewValue, role);
   if (canonicalDigest(parseVisibleJson(visibleOutput, `the exact visible ${role} output`)) !== canonicalDigest(reviewValue)) throw new Error(`${role} parsed review does not match its exact visible output.`);
-  const review = validatePlanReview(reviewValue, { role, planRevision: current.revision, contract: current.plan.contract });
   const receipt = validateRoleReceipt(receiptValue, { workflowId: current.id, role, inputRevision: revision(inputRevision, "review input bundle revision"), planRevision: current.revision, outputRevision: visibleOutputRevision(visibleOutput, `the exact visible ${role} output`) });
   assertReceiptAttempt(current, receipt);
   const contexts = Object.values(current.planning.reviewReceipts).map((item: any) => item.contextId);
@@ -1002,7 +1013,6 @@ export function recordPlanReview(workflow: any, reviewValue: unknown, receiptVal
   const reviews = { ...current.planning.reviews, [role]: review };
   const reviewReceipts = { ...current.planning.reviewReceipts, [role]: receipt };
   const taggedFindings = review.findings.map(finding => ({ ...finding, role }));
-  if (taggedFindings.some(finding => current.planning.reviewFindings.some((existing: any) => existing.id === finding.id))) throw new Error("Finding IDs must be unique across both current reviewers.");
   const reviewFindings = [...current.planning.reviewFindings, ...taggedFindings];
   const complete = Boolean(reviews.approach_reviewer && reviews.critic);
   let revisionState = current.planning.revisionState;

@@ -83,6 +83,7 @@ import {
   settleRoleAttempt,
   SNAPSHOT_STATE,
   structuredRevision,
+  validateCurrentPlanReview,
   validateExecutionPlan,
   validateStepApproach,
   type DispatchExpectation,
@@ -140,6 +141,8 @@ const DIMENSION_GAP_DESCRIPTION = "Assess this dimension independently. If score
 const SOURCE_HASH_DESCRIPTION = "Exact host-supplied 64-character answer or research content SHA-256 values only. Content hashes belong only in MaterialState sourceContentHashes, never in evidence or evidenceIds.";
 const CREDENTIAL_MATERIAL = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/-]{20,}|\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{12,}|\b(?:sk|tvly)-[A-Za-z0-9_-]{12,}/iu;
 const ROLE_REPAIR_OUTPUT_MAX_CHARS = 16_000;
+const ROLE_REPAIR_ERROR_MAX_BYTES = 8 * 1024;
+const ROLE_REPAIR_PROMPT_MAX_BYTES = 64 * 1024;
 type HostToolInventory = {
   version: 1;
   sourceApi: "ExtensionAPI.getAllTools";
@@ -268,65 +271,225 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function boundedRepairOutput(output: string) {
-  if (output.length <= ROLE_REPAIR_OUTPUT_MAX_CHARS) return output;
-
-  let parsed: unknown;
-  let malformed = false;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    malformed = true;
+function utf8PrefixEnd(value: string, maxBytes: number) {
+  let bytes = 0;
+  let end = 0;
+  for (const point of value) {
+    const pointBytes = Buffer.byteLength(point, "utf8");
+    if (bytes + pointBytes > maxBytes) break;
+    bytes += pointBytes;
+    end += point.length;
   }
+  return end;
+}
 
-  const ranges: Array<{ start: number; end: number }> = [];
-  const addRange = (start: number, length: number) => {
-    const boundedStart = Math.max(0, Math.min(output.length, start));
-    const end = Math.min(output.length, boundedStart + length);
-    if (end > boundedStart) ranges.push({ start: boundedStart, end });
-  };
-  const contractObject = !malformed
-    && parsed !== null
-    && typeof parsed === "object"
-    && !Array.isArray(parsed)
-    && Object.hasOwn(parsed, "contract");
-  const contractOffset = contractObject ? output.search(/"contract"\s*:/u) : -1;
-
-  if (contractOffset >= 0) {
-    const coverageOffset = output.indexOf('"requirementCoverage"', contractOffset);
-    const resolutionsOffset = output.lastIndexOf('"resolutions"');
-    addRange(0, 1_000);
-    addRange(Math.max(0, contractOffset - 64), 6_000);
-    if (coverageOffset >= 0) addRange(Math.max(0, coverageOffset - 64), 3_000);
-    if (resolutionsOffset >= 0) addRange(Math.max(0, resolutionsOffset - 64), 1_800);
-    addRange(output.length - 2_700, 2_700);
-  } else {
-    addRange(0, 7_250);
-    addRange(output.length - 7_250, 7_250);
+function utf8SuffixStart(value: string, maxBytes: number) {
+  let bytes = 0;
+  let start = value.length;
+  while (start > 0) {
+    let pointStart = start - 1;
+    const last = value.charCodeAt(pointStart);
+    if (last >= 0xdc00 && last <= 0xdfff && pointStart > 0) {
+      const first = value.charCodeAt(pointStart - 1);
+      if (first >= 0xd800 && first <= 0xdbff) pointStart -= 1;
+    }
+    const pointBytes = Buffer.byteLength(value.slice(pointStart, start), "utf8");
+    if (bytes + pointBytes > maxBytes) break;
+    bytes += pointBytes;
+    start = pointStart;
   }
+  return start;
+}
 
-  ranges.sort((left, right) => left.start - right.start);
-  const merged: Array<{ start: number; end: number }> = [];
-  for (const range of ranges) {
-    const previous = merged.at(-1);
-    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
-    else merged.push({ ...range });
-  }
-
-  const retained = merged.reduce((total, range) => total + range.end - range.start, 0);
-  const kind = malformed ? "MALFORMED JSON" : "JSON";
+function renderRepairExcerpt(value: string, kind: string, contentByteBudget: number) {
+  const prefixEnd = utf8PrefixEnd(value, Math.floor(contentByteBudget / 2));
+  const prefixBytes = Buffer.byteLength(value.slice(0, prefixEnd), "utf8");
+  const suffixStart = utf8SuffixStart(value, contentByteBudget - prefixBytes);
+  const ranges = suffixStart <= prefixEnd
+    ? [{ start: 0, end: value.length }]
+    : [
+        ...(prefixEnd > 0 ? [{ start: 0, end: prefixEnd }] : []),
+        ...(suffixStart < value.length ? [{ start: suffixStart, end: value.length }] : []),
+      ];
+  const retained = ranges.reduce((total, range) => total + range.end - range.start, 0);
+  const retainedBytes = ranges.reduce((total, range) => total + Buffer.byteLength(value.slice(range.start, range.end), "utf8"), 0);
+  const sourceBytes = Buffer.byteLength(value, "utf8");
   const lines = [
-    `[UNTRUSTED ${kind} VERBATIM EXCERPT: retained ${retained} of ${output.length} source characters; omitted ${output.length - retained}.]`,
+    `[UNTRUSTED ${kind} VERBATIM EXCERPT: retained ${retained} of ${value.length} source characters; omitted ${value.length - retained}. Retained ${retainedBytes} of ${sourceBytes} UTF-8 bytes; omitted ${sourceBytes - retainedBytes}.]`,
   ];
   let cursor = 0;
-  for (const range of merged) {
+  for (const range of ranges) {
     if (range.start > cursor) lines.push(`[OMITTED ${range.start - cursor} SOURCE CHARACTERS (${cursor}-${range.start - 1})]`);
-    lines.push(`[VERBATIM SOURCE CHARACTERS ${range.start}-${range.end - 1}]`, output.slice(range.start, range.end));
+    lines.push(`[VERBATIM SOURCE CHARACTERS ${range.start}-${range.end - 1}]`, value.slice(range.start, range.end));
     cursor = range.end;
   }
-  if (cursor < output.length) lines.push(`[OMITTED ${output.length - cursor} SOURCE CHARACTERS (${cursor}-${output.length - 1})]`);
+  if (cursor < value.length) lines.push(`[OMITTED ${value.length - cursor} SOURCE CHARACTERS (${cursor}-${value.length - 1})]`);
   lines.push(`[END UNTRUSTED ${kind} VERBATIM EXCERPT]`);
   return lines.join("\n");
+}
+
+function boundedRepairExcerpt(value: string, kind: string, maxBytes: number, maxChars: number) {
+  const empty = renderRepairExcerpt(value, kind, 0);
+  if (Buffer.byteLength(empty, "utf8") > maxBytes || empty.length > maxChars) {
+    throw new Error(`The required ${kind.toLowerCase()} omission envelope does not fit its repair-context allocation.`);
+  }
+  let best = empty;
+  let lower = 0;
+  let upper = Math.min(Buffer.byteLength(value, "utf8"), maxBytes);
+  while (lower <= upper) {
+    const candidateBudget = Math.floor((lower + upper) / 2);
+    const candidate = renderRepairExcerpt(value, kind, candidateBudget);
+    if (Buffer.byteLength(candidate, "utf8") <= maxBytes && candidate.length <= maxChars) {
+      best = candidate;
+      lower = candidateBudget + 1;
+    } else {
+      upper = candidateBudget - 1;
+    }
+  }
+  return best;
+}
+
+function repairOutputKind(output: string) {
+  try {
+    JSON.parse(output);
+    return "JSON";
+  } catch {
+    return "MALFORMED JSON";
+  }
+}
+
+function boundedRepairOutput(output: string, maxBytes = ROLE_REPAIR_PROMPT_MAX_BYTES) {
+  let rendered = output;
+  if (output.length > ROLE_REPAIR_OUTPUT_MAX_CHARS) {
+    let parsed: unknown;
+    let malformed = false;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      malformed = true;
+    }
+
+    const ranges: Array<{ start: number; end: number }> = [];
+    const addRange = (start: number, length: number) => {
+      const boundedStart = Math.max(0, Math.min(output.length, start));
+      const end = Math.min(output.length, boundedStart + length);
+      if (end > boundedStart) ranges.push({ start: boundedStart, end });
+    };
+    const contractObject = !malformed
+      && parsed !== null
+      && typeof parsed === "object"
+      && !Array.isArray(parsed)
+      && Object.hasOwn(parsed, "contract");
+    const contractOffset = contractObject ? output.search(/"contract"\s*:/u) : -1;
+
+    if (contractOffset >= 0) {
+      const coverageOffset = output.indexOf('"requirementCoverage"', contractOffset);
+      const resolutionsOffset = output.lastIndexOf('"resolutions"');
+      addRange(0, 1_000);
+      addRange(Math.max(0, contractOffset - 64), 6_000);
+      if (coverageOffset >= 0) addRange(Math.max(0, coverageOffset - 64), 3_000);
+      if (resolutionsOffset >= 0) addRange(Math.max(0, resolutionsOffset - 64), 1_800);
+      addRange(output.length - 2_700, 2_700);
+    } else {
+      addRange(0, 7_250);
+      addRange(output.length - 7_250, 7_250);
+    }
+
+    ranges.sort((left, right) => left.start - right.start);
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const range of ranges) {
+      const previous = merged.at(-1);
+      if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+      else merged.push({ ...range });
+    }
+
+    const retained = merged.reduce((total, range) => total + range.end - range.start, 0);
+    const kind = malformed ? "MALFORMED JSON" : "JSON";
+    const lines = [
+      `[UNTRUSTED ${kind} VERBATIM EXCERPT: retained ${retained} of ${output.length} source characters; omitted ${output.length - retained}.]`,
+    ];
+    let cursor = 0;
+    for (const range of merged) {
+      if (range.start > cursor) lines.push(`[OMITTED ${range.start - cursor} SOURCE CHARACTERS (${cursor}-${range.start - 1})]`);
+      lines.push(`[VERBATIM SOURCE CHARACTERS ${range.start}-${range.end - 1}]`, output.slice(range.start, range.end));
+      cursor = range.end;
+    }
+    if (cursor < output.length) lines.push(`[OMITTED ${output.length - cursor} SOURCE CHARACTERS (${cursor}-${output.length - 1})]`);
+    lines.push(`[END UNTRUSTED ${kind} VERBATIM EXCERPT]`);
+    rendered = lines.join("\n");
+  }
+  if (rendered.length <= ROLE_REPAIR_OUTPUT_MAX_CHARS && Buffer.byteLength(rendered, "utf8") <= maxBytes) return rendered;
+  return boundedRepairExcerpt(output, repairOutputKind(output), maxBytes, ROLE_REPAIR_OUTPUT_MAX_CHARS);
+}
+
+function boundedRepairError(error: string, maxBytes: number) {
+  const budget = Math.min(maxBytes, ROLE_REPAIR_ERROR_MAX_BYTES);
+  if (Buffer.byteLength(error, "utf8") <= budget) return error;
+  return boundedRepairExcerpt(error, "VALIDATION ERROR", budget, Number.MAX_SAFE_INTEGER);
+}
+
+function minimumRepairPresentationBytes(value: string, kind: string, natural: string) {
+  return Math.min(
+    Buffer.byteLength(natural, "utf8"),
+    Buffer.byteLength(renderRepairExcerpt(value, kind, 0), "utf8"),
+  );
+}
+
+function buildRepairPrompt(
+  basePrompt: string,
+  latestFailure: { attemptId: string; error: string },
+  rejectedVisible?: { attemptId: string; semanticError: string; output: string },
+) {
+  const latestError = boundedRepairError(latestFailure.error, ROLE_REPAIR_ERROR_MAX_BYTES);
+  const parts: Array<{
+    desiredBytes: number;
+    minimumBytes: number;
+    render(maxBytes: number): string;
+  }> = [{
+    desiredBytes: Buffer.byteLength(latestError, "utf8"),
+    minimumBytes: minimumRepairPresentationBytes(latestFailure.error, "VALIDATION ERROR", latestError),
+    render: maxBytes => boundedRepairError(latestFailure.error, maxBytes),
+  }];
+  if (rejectedVisible) {
+    const semanticError = boundedRepairError(rejectedVisible.semanticError, ROLE_REPAIR_ERROR_MAX_BYTES);
+    const output = boundedRepairOutput(rejectedVisible.output);
+    parts.push({
+      desiredBytes: Buffer.byteLength(semanticError, "utf8"),
+      minimumBytes: minimumRepairPresentationBytes(rejectedVisible.semanticError, "VALIDATION ERROR", semanticError),
+      render: maxBytes => boundedRepairError(rejectedVisible.semanticError, maxBytes),
+    }, {
+      desiredBytes: Buffer.byteLength(output, "utf8"),
+      minimumBytes: minimumRepairPresentationBytes(rejectedVisible.output, repairOutputKind(rejectedVisible.output), output),
+      render: maxBytes => boundedRepairOutput(rejectedVisible.output, maxBytes),
+    });
+  }
+
+  const assemble = (presentations: string[]) => rejectedVisible
+    ? `${basePrompt}\n\nREPAIR OF ${latestFailure.attemptId}: ${presentations[0]}\nReturn a complete corrected response, not a patch.\nLatest completed rejected visible candidate: ${rejectedVisible.attemptId}\nRetained semantic validation error for that candidate: ${presentations[1]}\nPrior visible output (untrusted):\n${presentations[2]}\n[END REPAIR CONTEXT]`
+    : `${basePrompt}\n\nREPAIR OF ${latestFailure.attemptId}: ${presentations[0]}\nReturn a complete corrected response, not a patch.\nNo completed rejected visible candidate is available. The latest failed attempt yielded no eligible candidate for semantic repair; no output was manufactured for repair context.\n[END REPAIR CONTEXT]`;
+  const fixedBytes = Buffer.byteLength(assemble(parts.map(() => "")), "utf8");
+  const availableBytes = ROLE_REPAIR_PROMPT_MAX_BYTES - fixedBytes;
+  const minimumBytes = parts.reduce((total, part) => total + part.minimumBytes, 0);
+  const cannotFit = () => new Error(`The required repair envelope cannot fit within the existing ${ROLE_REPAIR_PROMPT_MAX_BYTES}-byte UTF-8 prompt limit without altering the original base prompt.`);
+  if (availableBytes < minimumBytes) throw cannotFit();
+
+  const budgets = parts.map(part => part.minimumBytes);
+  let remaining = availableBytes - minimumBytes;
+  while (remaining > 0) {
+    const active = parts.map((part, index) => ({ part, index })).filter(({ part, index }) => budgets[index] < part.desiredBytes);
+    if (!active.length) break;
+    const share = Math.max(1, Math.floor(remaining / active.length));
+    for (const { part, index } of active) {
+      const added = Math.min(share, part.desiredBytes - budgets[index], remaining);
+      budgets[index] += added;
+      remaining -= added;
+      if (!remaining) break;
+    }
+  }
+  const presentations = parts.map((part, index) => part.render(budgets[index]));
+  const repairPrompt = assemble(presentations);
+  if (Buffer.byteLength(repairPrompt, "utf8") > ROLE_REPAIR_PROMPT_MAX_BYTES) throw cannotFit();
+  return repairPrompt;
 }
 
 function hashBytes(value: string | Buffer) {
@@ -545,6 +708,7 @@ function interviewReadDenial(
   const privateCandidates = privateIdentityCandidates(lexical);
   const ownerCwd = typeof current?.cwd === "string" && current.cwd ? current.cwd : dispatchCwd;
   const matchingWorkspace = matchesWorkflowWorkspace(current, dispatchCwd);
+  if (sessionFile && matchesExactPathIdentity(lexical, sessionFile)) return "the current Pi session file is private";
   if (current?.research && matchingWorkspace) {
     try {
       const designated = path.resolve(reservedWorkflowArtifact(ownerCwd, current.id, "research").path);
@@ -560,7 +724,6 @@ function interviewReadDenial(
   if (privateCandidates.some(candidate => roots.some(root => pathAtOrInside(root, candidate)))) {
     return "an actual controller/Pi root or loaded Solar host implementation/role identity is private";
   }
-  if (sessionFile && matchesExactPathIdentity(lexical, sessionFile)) return "the current Pi session file is private";
   if (privateCandidates.some(interviewCredentialDotfile)) return "credential-bearing dotfiles are categorically excluded";
   return undefined;
 }
@@ -1026,7 +1189,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
 
   function currentWorkflow(ctx = context) {
     const recovered = recoverWorkflow(branch(ctx));
-    if (recovered && ctx?.cwd && !matchesWorkflowWorkspace(recovered, ctx.cwd)) return { ...recovered, status: "workspace_mismatch" };
+    if (recovered && recovered.status !== "stopped" && ctx?.cwd && !matchesWorkflowWorkspace(recovered, ctx.cwd)) return { ...recovered, status: "workspace_mismatch" };
     return recovered;
   }
 
@@ -1101,7 +1264,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
     context = ctx;
     const entries = branch(ctx);
     workflow = recoverWorkflow(entries);
-    if (workflow && !matchesWorkflowWorkspace(workflow, ctx.cwd)) workflow = { ...workflow, status: "workspace_mismatch" };
+    if (workflow && workflow.status !== "stopped" && !matchesWorkflowWorkspace(workflow, ctx.cwd)) workflow = { ...workflow, status: "workspace_mismatch" };
     const recovered = recoverInterview(entries, { researchHead: researchHead(workflow) });
     interview = recovered.state;
     interviewPause = recovered.pause;
@@ -1520,10 +1683,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
         if (parseFailure) rejectedVisible = parseFailure;
         const latestFailure = { attemptId, error: errorText(error) };
         repairOf = latestFailure.attemptId;
-        const prior = rejectedVisible
-          ? `Latest completed rejected visible candidate: ${rejectedVisible.attemptId}\nRetained semantic validation error for that candidate: ${rejectedVisible.semanticError}\nPrior visible output (untrusted):\n${boundedRepairOutput(rejectedVisible.output)}`
-          : "No completed rejected visible candidate is available. The latest failed attempt yielded no eligible candidate for semantic repair; no output was manufactured for repair context.";
-        repairPrompt = `${prompt}\n\nREPAIR OF ${latestFailure.attemptId}: ${latestFailure.error}\nReturn a complete corrected response, not a patch.\n${prior}\n[END REPAIR CONTEXT]`;
+        repairPrompt = buildRepairPrompt(prompt, latestFailure, rejectedVisible);
       }
     }
   }
@@ -1592,7 +1752,21 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
           const reviewInventory = hostToolInventory(pi);
           assertCapabilityToolsAvailable(current.plan.contract, reviewInventory, `${role} dispatch`);
           const bundle = planningBundle(current, role, reviewInventory);
-          const reviewed = await runParsedRole(runner, ctx, current, role, bundle, reviewerSystemPrompt(role), reviewerPrompt(current, role), output => parseVisibleJson(output, `the exact visible ${role} output`), signal);
+          const reviewed = await runParsedRole(
+            runner,
+            ctx,
+            current,
+            role,
+            bundle,
+            reviewerSystemPrompt(role),
+            reviewerPrompt(current, role),
+            (output, fresh) => {
+              const parsed = parseVisibleJson(output, `the exact visible ${role} output`);
+              validateCurrentPlanReview(fresh, parsed, role);
+              return parsed;
+            },
+            signal,
+          );
           current = currentWorkflow(ctx);
           if (!current || current.revision !== reviewed.result.receipt.planRevision) throw new Error(`${role} output became stale before review commit.`);
           assertCapabilityToolsAvailable(current.plan.contract, hostToolInventory(pi), `${role} review commit`);

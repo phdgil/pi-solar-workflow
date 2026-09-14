@@ -220,3 +220,9 @@ C14의 metadata-only 계측은 실제 provider 요청에 완전한 역할이 실
 비계측 C14 planning-only도 723203 ms, 1 main call / 3494 tokens, 8/12 실패였으며 Planner 네 시도가 모두 제한에 도달했다.
 
 새 승인 cursor의 정상 경로는 real Solar 성공을 기다리는 대신 installed-Pi loopback에 실제 experiment runner CLI를 연결해 별도로 검증했다. 첫 시도는 임시 설치 package와 explicit CLI skill의 provenance 충돌, 두 번째는 새 mock plan의 numbered-step 누락으로 차단됐다. 기존 검사는 유지하고 runner의 임시 설정을 분리하며 mock plan을 올바르게 작성한 뒤, 실제 RPC dispatch → 요청 이전 watermark → 이후 host grant → evaluator/final manifests 경로와 16/16 독립 runner 검사가 통과했다. 실패 자료는 보존했다. 이는 설치된 SDK/controller/runner 통합 증거이지 real Solar 품질이나 convergence가 아니다.
+
+C15는 같은 product와 새 heldout protocol로 일곱 사례의 세 회차를 선언했으나, 독립 코드 감사가 발견한 결함 때문에 진행 중 사례 종료 후 중단했다. Research는 40580 ms / 11/11, interview는 266732 ms / 12/12로 통과했다. Planning은 842006 ms / 8/12 (`role_session_interrupted`), summary는 948277 ms / 10/16 (`unsafe_not_approved`)로 실패했다. 완주한 회차는 없고 새 heldout은 한 번도 실행하지 않았다. 동결본과 결과는 변경하지 않는다.
+
+감사는 research 예외가 exact-session hardlink 거절보다 먼저 적용되는 교차 조건, workspace mismatch가 stopped 상태를 덮어쓰는 조건, blocked finding이 다음 revision의 의무에서 사라지는 문제를 찾았다. 또한 reviewer의 JSON 문법 통과 후 의미 오류가 bounded repair 밖에서 거절되고, 긴 검증 오류가 repair prompt의 기존 byte 한도를 초과할 수 있었다. 이는 정적 재현 경로가 있는 controller 결함이며 실제 비밀 유출이나 Solar의 해당 입력 생성을 관측했다는 뜻은 아니다. 보정과 현행 검증 전에는 C15를 수렴 근거로 사용할 수 없다.
+
+보정 후 305/305 회귀 검사와 installed-Pi smoke가 통과했다. 실제 runner의 승인·완료 16/16 검사도 유지했다. 별도 임시 mirror에서는 변경하지 않은 C15 product에 새 회귀 검사를 적용하여 blocked finding 한 건, privacy 교차 두 건, reviewer/진단 한도 네 건의 assertion 실패를 확인했다. 초기 mirror의 누락된 test dependency 오류도 보존하고 구분했다. Reviewer 검증 결과의 정규화가 원래 JSON과 충돌하지 않도록, callback은 검증만 수행한 뒤 원래 parsed value를 commit에 전달한다. 이 증거는 보정의 회귀·통합 검증이며 새로운 real Solar 성공 횟수가 아니다.

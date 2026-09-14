@@ -32,6 +32,7 @@ import {
   runGates,
   settleRoleAttempt,
   structuredRevision,
+  validateCurrentPlanReview,
   validateExecutionPlan,
   validateFindingResolutions,
   validatePlanReview,
@@ -791,6 +792,93 @@ test("plan reviews keep receipts, findings, resolutions, and revision state sepa
   assert.equal(revised.planning.history.length, 1);
 }));
 
+test("blocked findings remain active across resume and require a changed resolving revision with exact lineage", () => fixture(workspace => {
+  let workflow = beginReviewing(initializeLoop({ id: "blocked-lineage", stage: "plan", status: "active", cwd: workspace, workspaceId: workspaceIdentity(workspace), autoExecute: true }));
+  const finding = {
+    id: "BLOCK1",
+    severity: "material",
+    summary: "The final replacement cannot yet be verified as atomic.",
+    requiredChange: "Add and verify an atomic final replacement action.",
+    planLocations: ["steps.STEP2.actions"],
+  };
+  workflow = appendReview(workflow, "approach_reviewer", { verdict: "blocked", findings: [finding] });
+  workflow = appendReview(workflow, "critic");
+  const firstRevision = workflow.revision;
+
+  const blockedContract = structuredClone(workflow.plan.contract);
+  blockedContract.steps[1].actions.push("Record that atomic replacement remains blocked until the required mechanism is identified.");
+  const blockedOutput = plannerOutput(blockedContract, [{
+    findingId: finding.id,
+    status: "blocked",
+    changedLocations: [],
+    explanation: "The revised plan records the blocker, but cannot yet supply the required atomic replacement mechanism.",
+  }]);
+  const blockedDecoded = decodePlannerOutput(blockedOutput, workflow);
+  const blockedInputRevision = digest("blocked lineage Planner bundle");
+  const blockedPlanner = roleSuccess(workflow, { role: "planner", inputRevision: blockedInputRevision, planRevision: firstRevision, outputRevision: digest(blockedOutput) });
+  const blocked = beginPlanRevision(
+    blockedPlanner.workflow,
+    { path: workflow.plan.path, text: blockedDecoded.planMarkdown, revision: digest(blockedDecoded.planMarkdown) },
+    { plannerReceipt: blockedPlanner.receipt, inputRevision: blockedInputRevision, visibleOutput: blockedOutput, resolutions: blockedDecoded.resolutions },
+  );
+  const blockedRevision = blocked.revision;
+  assert.notEqual(blockedRevision, firstRevision);
+  assert.equal(blocked.status, "revision_required");
+  assert.equal(blocked.planning.revisionState, "blocked");
+  assert.deepEqual(blocked.planning.reviewFindings, [{ ...finding, role: "approach_reviewer" }]);
+  assert.deepEqual(
+    blocked.planning.findingResolutions.map(({ findingId, fromPlanRevision, toPlanRevision, status }) => ({ findingId, fromPlanRevision, toPlanRevision, status })),
+    [{ findingId: finding.id, fromPlanRevision: firstRevision, toPlanRevision: blockedRevision, status: "blocked" }],
+  );
+
+  const blockedPlanningSnapshot = structuredClone(blocked.planning);
+  const resumed = resumeLoop({ ...blocked, status: "paused", reason: "The blocked planning obligation awaits an ordinary resume." });
+  assert.equal(resumed.status, "active");
+  assert.deepEqual(resumed.planning.reviewFindings, blocked.planning.reviewFindings);
+
+  const identicalOutput = plannerOutput(blockedContract, []);
+  const identicalInputRevision = digest("identical blocked lineage Planner bundle");
+  const identicalPlanner = roleSuccess(resumed, { role: "planner", inputRevision: identicalInputRevision, planRevision: blockedRevision, outputRevision: digest(identicalOutput) });
+  assert.throws(
+    () => beginPlanRevision(
+      identicalPlanner.workflow,
+      { path: resumed.plan.path, text: resumed.plan.text, revision: resumed.revision },
+      { plannerReceipt: identicalPlanner.receipt, inputRevision: identicalInputRevision, visibleOutput: identicalOutput, resolutions: [] },
+    ),
+    /review findings require a materially changed full plan/,
+  );
+
+  const resolvedContract = structuredClone(blockedContract);
+  resolvedContract.steps[1].actions.push("Atomically replace the validated final artifact and verify the exact resulting bytes.");
+  const resolvedOutput = plannerOutput(resolvedContract, [{
+    findingId: finding.id,
+    status: "resolved",
+    changedLocations: ["steps.STEP2.actions"],
+    explanation: "The complete revised plan now requires both atomic replacement and exact-byte verification.",
+  }]);
+  const resolvedDecoded = decodePlannerOutput(resolvedOutput, resumed);
+  const resolvedInputRevision = digest("resolved lineage Planner bundle");
+  const resolvedPlanner = roleSuccess(resumed, { role: "planner", inputRevision: resolvedInputRevision, planRevision: blockedRevision, outputRevision: digest(resolvedOutput) });
+  const resolved = beginPlanRevision(
+    resolvedPlanner.workflow,
+    { path: resumed.plan.path, text: resolvedDecoded.planMarkdown, revision: digest(resolvedDecoded.planMarkdown) },
+    { plannerReceipt: resolvedPlanner.receipt, inputRevision: resolvedInputRevision, visibleOutput: resolvedOutput, resolutions: resolvedDecoded.resolutions },
+  );
+  assert.notEqual(resolved.revision, blockedRevision);
+  assert.equal(resolved.planning.revisionState, "awaiting_reviews");
+  assert.deepEqual(resolved.planning.reviewFindings, []);
+  assert.deepEqual(
+    resolved.planning.findingResolutions.map(({ findingId, fromPlanRevision, toPlanRevision, status }) => ({ findingId, fromPlanRevision, toPlanRevision, status })),
+    [{ findingId: finding.id, fromPlanRevision: blockedRevision, toPlanRevision: resolved.revision, status: "resolved" }],
+  );
+  assert.deepEqual(
+    resolved.planning.history.at(-1).findingResolutions.map(({ findingId, fromPlanRevision, toPlanRevision, status }) => ({ findingId, fromPlanRevision, toPlanRevision, status })),
+    [{ findingId: finding.id, fromPlanRevision: firstRevision, toPlanRevision: blockedRevision, status: "blocked" }],
+  );
+  assert.deepEqual(resolved.planning.history.at(-1).reviewFindings, [{ ...finding, role: "approach_reviewer" }]);
+  assert.deepEqual(blocked.planning, blockedPlanningSnapshot);
+}));
+
 test("beginPlanRevision rejects a forged resolution that differs from the raw Planner mapping", () => fixture(workspace => {
   let workflow = beginReviewing(initializeLoop({ id: "resolution-binding", stage: "plan", status: "active", cwd: workspace, workspaceId: workspaceIdentity(workspace), autoExecute: true }));
   workflow = appendReview(workflow, "approach_reviewer", {
@@ -904,6 +992,37 @@ test("cross-role finding ID collisions fail closed before one resolution can sat
   const expectation = { fromPlanRevision: workflow.revision, toPlanRevision: digest("candidate revision") };
   assert.throws(() => validateFindingResolutions([resolution], collidingFindings, expectation), /Map every current review finding/);
   assert.throws(() => validateFindingResolutions([resolution, structuredClone(resolution)], collidingFindings, expectation), /unknown or duplicate current finding/);
+}));
+
+test("validateCurrentPlanReview is pure and enforces current reviewer authority", () => fixture(workspace => {
+  const workflow = beginReviewing(initializeLoop({ id: "pure-review-validation", stage: "plan", status: "active", cwd: workspace, workspaceId: workspaceIdentity(workspace), autoExecute: true }));
+  const review = reviewFixture(workflow, "approach_reviewer");
+  const workflowSnapshot = structuredClone(workflow);
+  const reviewSnapshot = structuredClone(review);
+  assert.deepEqual(validateCurrentPlanReview(workflow, review, "approach_reviewer"), review);
+  assert.deepEqual(workflow, workflowSnapshot);
+  assert.deepEqual(review, reviewSnapshot);
+
+  assert.throws(() => validateCurrentPlanReview({ ...workflow, status: "revision_required" }, review, "approach_reviewer"), /No current plan revision is accepting isolated reviews/);
+  assert.throws(() => validateCurrentPlanReview(workflow, review, "critic"), /version\/role does not match/);
+  assert.throws(() => validateCurrentPlanReview(workflow, review, "planner"), /Validate only an Approach Reviewer or Critic/);
+  assert.throws(() => validateCurrentPlanReview(workflow, { ...review, planRevision: digest("stale review") }, "approach_reviewer"), /stale/);
+  assert.throws(() => validateCurrentPlanReview(workflow, { ...review, domain: "research" }, "approach_reviewer"), /domain does not match/);
+  assert.throws(() => validateCurrentPlanReview(workflow, { ...review, requirementCoverage: [] }, "approach_reviewer"), /assess every current requirement/);
+
+  const finding = {
+    id: "DUPLICATE1",
+    severity: "material",
+    summary: "The replacement action is not atomic.",
+    requiredChange: "Require an atomic replacement action.",
+    planLocations: ["steps.STEP2.actions"],
+  };
+  const withApproachReview = appendReview(workflow, "approach_reviewer", { verdict: "revise", findings: [finding] });
+  const reviewedSnapshot = structuredClone(withApproachReview);
+  assert.throws(() => validateCurrentPlanReview(withApproachReview, reviewFixture(withApproachReview, "approach_reviewer"), "approach_reviewer"), /already reviewed/);
+  const collidingCritic = reviewFixture(withApproachReview, "critic", { verdict: "revise", findings: [{ ...finding }] });
+  assert.throws(() => validateCurrentPlanReview(withApproachReview, collidingCritic, "critic"), /Finding IDs must be unique across both current reviewers/);
+  assert.deepEqual(withApproachReview, reviewedSnapshot);
 }));
 
 test("matching current reviews pass while stale/mismatched reviews and shared contexts fail", () => fixture(workspace => {

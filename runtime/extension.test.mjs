@@ -849,54 +849,72 @@ test("interview read dispatch applies credential and session identity to NTFS ba
   assert.deepEqual(underlyingReads, [], "Credential streams and every stream of the configured session backing file must be denied before read execution");
 }));
 
-test("interview read dispatch protects a hard link to the exact current session by nonzero bigint file identity", async () => fixture(async (workspace, root) => {
+test("interview read dispatch denies an exact-session hard link at the designated research path without denying an ordinary research artifact", async () => fixture(async (workspace, root) => {
   const privateSentinel = "session-hardlink-private".padEnd(35, "_");
   const sessionFile = path.join(root, "current-session.jsonl");
-  const hardLink = path.join(workspace, "ordinary-looking-evidence.jsonl");
   const ordinarySibling = path.join(workspace, "ordinary-sibling.jsonl");
   assert.equal(Buffer.byteLength(privateSentinel, "utf8"), 35);
   writeFileSync(sessionFile, privateSentinel, "utf8");
-  linkSync(sessionFile, hardLink);
   writeFileSync(ordinarySibling, "authorized ordinary sibling evidence", "utf8");
 
-  assert.notEqual(realpathSync(sessionFile), realpathSync(hardLink), "The hard-link regression requires distinct canonical path spellings");
+  const { pi } = installHost(workspace, passingResponder(contractFixture()), { sessionDir: root, sessionFile });
+  await startAndInitialize(pi, "/skill:solar-research Establish local context before interview. --local-only");
+  const returned = await pi.callTool("solar_research_ready", {
+    expectedArtifactRevision: null,
+    contract: {
+      version: 2,
+      mode: "initial",
+      outcome: "ready",
+      claims: [{ id: "LOCAL1", kind: "user_decision", text: "Use the authorized local evidence.", sourceIds: [] }],
+      sources: [],
+      learnedClaimIds: ["LOCAL1"],
+      remainingGap: "The exact deliverable still needs interview confirmation.",
+    },
+  });
+  assert.equal(returned.details.stage, "interview");
+  await pi.startInput("/skill:solar-interview resume Use only the authorized local evidence. --plan-only");
+  const current = pi.workflow();
+  const ordinaryResearchText = current.research.text;
+  rmSync(current.research.path);
+  linkSync(sessionFile, current.research.path);
+
+  assert.notEqual(realpathSync(sessionFile), realpathSync(current.research.path), "The hard-link regression requires distinct canonical path spellings");
   const sessionStat = statSync(sessionFile, { bigint: true });
-  const hardLinkStat = statSync(hardLink, { bigint: true });
+  const hardLinkStat = statSync(current.research.path, { bigint: true });
   assert.notEqual(sessionStat.dev, 0n);
   assert.notEqual(sessionStat.ino, 0n);
   assert.equal(hardLinkStat.dev, sessionStat.dev);
   assert.equal(hardLinkStat.ino, sessionStat.ino);
-  assert.equal(readFileSync(hardLink, "utf8"), privateSentinel);
+  assert.equal(readFileSync(current.research.path, "utf8"), privateSentinel);
 
-  const { pi } = installHost(workspace, passingResponder(contractFixture()), { sessionDir: root, sessionFile });
-  await startAndInitialize(pi, "/skill:solar-interview --plan-only Use only the authorized ordinary sibling evidence.");
   const underlyingReads = [];
-  const denied = await pi.emit("tool_call", {
-    type: "tool_call",
-    toolCallId: "hard-linked-session",
-    toolName: "read",
-    input: { path: path.basename(hardLink) },
-  });
-  if (!denied?.block) {
-    underlyingReads.push(hardLink);
-    readFileSync(hardLink, "utf8");
-  }
-  assert.equal(denied.block, true);
-  assert.equal(denied.terminate, true);
-  assert.match(denied.reason, /current Pi session file is private/u);
-  assert.doesNotMatch(denied.reason, new RegExp(privateSentinel));
-  assert.deepEqual(underlyingReads, [], "The hard-linked session alias must be rejected before underlying read execution");
+  const dispatchRead = async (id, target) => {
+    const decision = await pi.emit("tool_call", { type: "tool_call", toolCallId: id, toolName: "read", input: { path: target } });
+    if (decision?.block) return { decision };
+    const resolvedTarget = path.isAbsolute(target) ? target : path.resolve(workspace, target);
+    underlyingReads.push(resolvedTarget);
+    return { decision, text: readFileSync(resolvedTarget, "utf8") };
+  };
+  const denied = await dispatchRead("hard-linked-designated-research", current.research.relativePath);
+  assert.equal(denied.decision.block, true);
+  assert.equal(denied.decision.terminate, true);
+  assert.match(denied.decision.reason, /current Pi session file is private/u);
+  assert.doesNotMatch(denied.decision.reason, new RegExp(privateSentinel));
+  assert.deepEqual(underlyingReads, [], "The hard-linked designated research path must be rejected before underlying read execution");
 
-  const allowed = await pi.emit("tool_call", {
-    type: "tool_call",
-    toolCallId: "ordinary-hardlink-sibling",
-    toolName: "read",
-    input: { path: path.basename(ordinarySibling) },
-  });
-  assert.equal(allowed, undefined);
-  underlyingReads.push(ordinarySibling);
-  assert.equal(readFileSync(ordinarySibling, "utf8"), "authorized ordinary sibling evidence");
-  assert.deepEqual(underlyingReads, [ordinarySibling], "No generic hard-link or sibling filename ban may be introduced");
+  rmSync(current.research.path);
+  writeFileSync(current.research.path, ordinaryResearchText, "utf8");
+  const ordinaryResearchStat = statSync(current.research.path, { bigint: true });
+  assert.notEqual(`${ordinaryResearchStat.dev}:${ordinaryResearchStat.ino}`, `${sessionStat.dev}:${sessionStat.ino}`);
+  const allowedResearch = await dispatchRead("ordinary-designated-research", current.research.relativePath);
+  assert.equal(allowedResearch.decision, undefined);
+  assert.equal(allowedResearch.text, ordinaryResearchText);
+  assert.deepEqual(underlyingReads, [current.research.path], "An ordinary designated research artifact must retain its exact read exception");
+
+  const allowedSibling = await dispatchRead("ordinary-hardlink-sibling", path.basename(ordinarySibling));
+  assert.equal(allowedSibling.decision, undefined);
+  assert.equal(allowedSibling.text, "authorized ordinary sibling evidence");
+  assert.deepEqual(underlyingReads, [current.research.path, ordinarySibling], "No generic hard-link or sibling filename ban may be introduced");
 }));
 
 test("interview reads preserve non-private evidence and the exact current research artifact exception", async () => fixture(async (workspace, root) => {
@@ -1233,6 +1251,66 @@ test("stopped interviews restore ordinary reads beyond the assessment budget whi
   assert.match(denied.reason, /Interview read denied before dispatch/u);
 }));
 
+test("stopped interview workspace mismatches preserve ordinary reads in current and freshly restored runtimes", async () => fixture(async (ownerWorkspace, root) => {
+  const contextWorkspace = path.join(root, "workspace-b");
+  const ordinaryEvidence = path.join(contextWorkspace, "ordinary-evidence.txt");
+  mkdirSync(contextWorkspace);
+  writeFileSync(ordinaryEvidence, "authorized ordinary evidence", "utf8");
+  const { pi } = installHost(ownerWorkspace, passingResponder(contractFixture()));
+  await startAndInitialize(pi, "/skill:solar-interview --plan-only Clarify one local result.");
+  for (let index = 1; index <= 6; index += 1) {
+    assert.equal(await pi.emit("tool_call", {
+      type: "tool_call",
+      toolCallId: `owner-active-budget-${index}`,
+      toolName: "read",
+      input: { path: ordinaryEvidence },
+    }), undefined);
+  }
+  await pi.command("solar-workflow", "stop");
+  const stopped = pi.workflow();
+  assert.equal(stopped.status, "stopped");
+  assert.equal(stopped.cwd, realpathSync(ownerWorkspace));
+
+  const mismatchContext = {
+    ...pi.ctx,
+    cwd: contextWorkspace,
+    sessionManager: {
+      ...pi.ctx.sessionManager,
+      getBranch: () => pi.entries,
+    },
+  };
+  for (let index = 1; index <= 2; index += 1) {
+    assert.equal(await pi.emit("tool_call", {
+      type: "tool_call",
+      toolCallId: `stopped-mismatch-read-${index}`,
+      toolName: "read",
+      input: { path: ordinaryEvidence },
+    }, mismatchContext), undefined);
+    assert.equal(readFileSync(ordinaryEvidence, "utf8"), "authorized ordinary evidence");
+  }
+  assert.equal(pi.workflow().status, "stopped");
+  assert.equal(pi.workflow().cwd, stopped.cwd);
+  assert.equal(pi.workflow().workspaceId, stopped.workspaceId);
+
+  const { pi: restored } = installHost(contextWorkspace, passingResponder(contractFixture()));
+  restored.entries.push(...structuredClone(pi.entries));
+  await restored.emit("session_start", { type: "session_start", reason: "reload" });
+  assert.equal(restored.workflow().status, "stopped");
+  assert.equal(restored.workflow().cwd, stopped.cwd);
+  assert.equal(restored.workflow().workspaceId, stopped.workspaceId);
+  assert.ok(restored.activeTools.includes("write"), "A fresh mismatched restore must retain dormant ordinary host tools");
+  assert.ok(!restored.activeTools.some(name => name.startsWith("solar_")), "A fresh mismatched restore must not revive foreign workflow authority");
+  for (let index = 1; index <= 7; index += 1) {
+    assert.equal(await restored.emit("tool_call", {
+      type: "tool_call",
+      toolCallId: `fresh-stopped-mismatch-read-${index}`,
+      toolName: "read",
+      input: { path: ordinaryEvidence },
+    }), undefined);
+  }
+  assert.equal(readFileSync(ordinaryEvidence, "utf8"), "authorized ordinary evidence");
+}));
+
 test("the planning dispatcher cannot read workspace or package implementation files", async () => fixture(async workspace => {
   const { pi } = installHost(workspace, passingResponder(contractFixture()));
   await startAndInitialize(pi, "/skill:solar-plan --plan-only Create a reviewed local plan.");
@@ -1360,6 +1438,99 @@ test("an obsolete Planner envelope is repaired under the unchanged initial schem
     JSON.stringify({ planMarkdown: planText(contract), resolutions: [] }),
     plannerOutput(contract),
   ]);
+}));
+
+test("syntactically valid reviewer semantic failures consume a bounded repair before authority commit", async () => fixture(async workspace => {
+  const contract = contractFixture();
+  const rejectedOutput = "{}";
+  let approachCalls = 0;
+  let repairedOutput;
+  const { pi, roleStats } = installHost(workspace, request => {
+    if (request.role === "planner") return plannerOutput(contract);
+    if (request.role === "approach_reviewer") {
+      approachCalls += 1;
+      if (approachCalls === 1) return rejectedOutput;
+      const repaired = reviewFixture(contract, request.role, request.planRevision);
+      repaired.assessment.analysis = ` ${repaired.assessment.analysis}\n`;
+      repairedOutput = JSON.stringify(repaired);
+      return repairedOutput;
+    }
+    return JSON.stringify(reviewFixture(contract, request.role, request.planRevision));
+  });
+  await startAndInitialize(pi, "/skill:solar-plan --plan-only Create a reviewed local result.");
+
+  assertToolSucceeded(await pi.callTool("solar_plan_ready", {}), "reviewer semantic repair");
+  const current = pi.workflow();
+  const approachRequests = roleStats.requests.filter(request => request.role === "approach_reviewer");
+  const approachAttempts = current.roleAttempts.filter(attempt => attempt.role === "approach_reviewer");
+  assert.deepEqual(roleStats.requests.map(request => request.role), ["planner", "approach_reviewer", "approach_reviewer", "critic"]);
+  assert.equal(approachRequests.length, 2);
+  assert.equal(approachRequests[1].repairOf, approachAttempts[0].attemptId);
+  assert.ok(approachRequests[1].prompt.startsWith(`${approachRequests[0].prompt}\n\nREPAIR OF ${approachAttempts[0].attemptId}:`));
+  assert.ok(approachRequests[1].prompt.endsWith(`${rejectedOutput}\n[END REPAIR CONTEXT]`));
+  assert.ok(Buffer.byteLength(approachRequests[1].prompt, "utf8") <= 64 * 1024);
+  assert.equal(current.roleValidationFailures.length, 1);
+  assert.equal(current.roleValidationFailures[0].role, "approach_reviewer");
+  assert.match(current.roleValidationFailures[0].error, /PlanReview|Approach Reviewer|approach_reviewer/u);
+  const normalizedReview = JSON.parse(repairedOutput);
+  normalizedReview.assessment.analysis = normalizedReview.assessment.analysis.trim();
+  assert.deepEqual(current.planning.reviews.approach_reviewer, normalizedReview);
+  assert.deepEqual(
+    pi.entries
+      .filter(entry => entry.customType === "solar-role-visible-output-v1" && entry.data.role === "approach_reviewer")
+      .map(entry => entry.data.output),
+    [rejectedOutput, repairedOutput],
+  );
+  assert.deepEqual({ roleCalls: current.budgets.roleCalls, roleRepairs: current.budgets.roleRepairs }, { roleCalls: 4, roleRepairs: 1 });
+}));
+
+test("a duplicate finding across reviewers is rejected inside the Critic repair boundary", async () => fixture(async workspace => {
+  const contract = contractFixture();
+  const duplicateFinding = {
+    id: "SHARED-FINDING",
+    severity: "advisory",
+    summary: "Keep the qualitative boundary explicit.",
+    requiredChange: "Retain the exact current-byte acceptance wording.",
+    planLocations: ["## Acceptance criteria"],
+  };
+  let criticCalls = 0;
+  let rejectedOutput;
+  let repairedOutput;
+  const { pi, roleStats } = installHost(workspace, request => {
+    if (request.role === "planner") return plannerOutput(contract);
+    if (request.role === "approach_reviewer") {
+      return JSON.stringify(reviewFixture(contract, request.role, request.planRevision, { findings: [duplicateFinding] }));
+    }
+    criticCalls += 1;
+    if (criticCalls === 1) {
+      rejectedOutput = JSON.stringify(reviewFixture(contract, request.role, request.planRevision, { findings: [duplicateFinding] }));
+      return rejectedOutput;
+    }
+    repairedOutput = JSON.stringify(reviewFixture(contract, request.role, request.planRevision));
+    return repairedOutput;
+  });
+  await startAndInitialize(pi, "/skill:solar-plan --plan-only Create a reviewed local result.");
+
+  assertToolSucceeded(await pi.callTool("solar_plan_ready", {}), "cross-review finding repair");
+  const current = pi.workflow();
+  const criticRequests = roleStats.requests.filter(request => request.role === "critic");
+  const criticAttempts = current.roleAttempts.filter(attempt => attempt.role === "critic");
+  assert.deepEqual(roleStats.requests.map(request => request.role), ["planner", "approach_reviewer", "critic", "critic"]);
+  assert.equal(criticRequests[1].repairOf, criticAttempts[0].attemptId);
+  assert.ok(criticRequests[1].prompt.endsWith(`${rejectedOutput}\n[END REPAIR CONTEXT]`));
+  assert.ok(Buffer.byteLength(criticRequests[1].prompt, "utf8") <= 64 * 1024);
+  assert.equal(current.roleValidationFailures.length, 1);
+  assert.equal(current.roleValidationFailures[0].role, "critic");
+  assert.match(current.roleValidationFailures[0].error, /Finding IDs must be unique across both current reviewers/u);
+  assert.deepEqual(current.planning.reviews.critic, JSON.parse(repairedOutput));
+  assert.deepEqual(current.planning.reviewFindings.map(finding => ({ id: finding.id, role: finding.role })), [{ id: "SHARED-FINDING", role: "approach_reviewer" }]);
+  assert.deepEqual(
+    pi.entries
+      .filter(entry => entry.customType === "solar-role-visible-output-v1" && entry.data.role === "critic")
+      .map(entry => entry.data.output),
+    [rejectedOutput, repairedOutput],
+  );
+  assert.deepEqual({ roleCalls: current.budgets.roleCalls, roleRepairs: current.budgets.roleRepairs }, { roleCalls: 4, roleRepairs: 1 });
 }));
 
 test("trailing whitespace in rejected native JSON remains verbatim without invalidating the repair request", async () => fixture(async workspace => {
@@ -1518,6 +1689,79 @@ test("cancellation after a semantic rejection does not consume or dispatch anoth
   assert.equal(roleStats.sessions[1].aborts, 1);
   assert.equal(roleStats.sessions[1].disposals, 1);
 }));
+
+for (const diagnosticCase of [
+  { label: "ASCII", unit: "x" },
+  { label: "multibyte", unit: "界" },
+]) {
+  test(`oversized ${diagnosticCase.label} validation diagnostics remain recorded while a byte-bounded repair succeeds`, async () => fixture(async workspace => {
+    const contract = contractFixture();
+    const unsupportedKey = `${diagnosticCase.label}-ERROR-BEGIN-${diagnosticCase.unit.repeat(36_000)}-${diagnosticCase.label}-ERROR-END`;
+    const rejectedOutput = JSON.stringify({
+      status: "ready",
+      sections: plannerSections(),
+      contract,
+      resolutions: [],
+      [unsupportedKey]: true,
+    });
+    const completeError = `Planner output contains unsupported fields: ${unsupportedKey}.`;
+    assert.ok(Buffer.byteLength(completeError, "utf8") > 8 * 1024);
+    assert.ok(Buffer.byteLength(rejectedOutput, "utf8") < 256 * 1024);
+    let plannerCalls = 0;
+    const { pi, roleStats } = installHost(workspace, request => {
+      if (request.role !== "planner") return JSON.stringify(reviewFixture(contract, request.role, request.planRevision));
+      plannerCalls += 1;
+      return plannerCalls === 1 ? rejectedOutput : plannerOutput(contract);
+    });
+    await startAndInitialize(pi, "/skill:solar-plan --plan-only Create a reviewed local result.");
+
+    assertToolSucceeded(await pi.callTool("solar_plan_ready", {}), `${diagnosticCase.label} diagnostic repair`);
+    const current = pi.workflow();
+    const plannerRequests = roleStats.requests.filter(request => request.role === "planner");
+    const plannerAttempts = current.roleAttempts.filter(attempt => attempt.role === "planner");
+    const repairRequest = plannerRequests[1];
+    assert.equal(plannerRequests.length, 2);
+    assert.equal(repairRequest.repairOf, plannerAttempts[0].attemptId);
+    assert.equal(repairRequest.prompt.slice(0, plannerRequests[0].prompt.length), plannerRequests[0].prompt);
+    assert.ok(repairRequest.prompt.startsWith(`${plannerRequests[0].prompt}\n\nREPAIR OF ${plannerAttempts[0].attemptId}: `));
+    assert.ok(repairRequest.prompt.endsWith("\n[END REPAIR CONTEXT]"));
+    assert.ok(Buffer.byteLength(repairRequest.prompt, "utf8") <= 64 * 1024);
+
+    const latestErrorStart = repairRequest.prompt.indexOf(`REPAIR OF ${plannerAttempts[0].attemptId}: `) + `REPAIR OF ${plannerAttempts[0].attemptId}: `.length;
+    const latestErrorEnd = repairRequest.prompt.indexOf("\nReturn a complete corrected response, not a patch.", latestErrorStart);
+    const retainedErrorMarker = "Retained semantic validation error for that candidate: ";
+    const retainedErrorStart = repairRequest.prompt.indexOf(retainedErrorMarker) + retainedErrorMarker.length;
+    const retainedErrorEnd = repairRequest.prompt.indexOf("\nPrior visible output (untrusted):", retainedErrorStart);
+    const latestErrorPresentation = repairRequest.prompt.slice(latestErrorStart, latestErrorEnd);
+    const retainedErrorPresentation = repairRequest.prompt.slice(retainedErrorStart, retainedErrorEnd);
+    for (const presentation of [latestErrorPresentation, retainedErrorPresentation]) {
+      assert.ok(Buffer.byteLength(presentation, "utf8") <= 8 * 1024);
+      assert.match(presentation, /^\[UNTRUSTED VALIDATION ERROR VERBATIM EXCERPT:/u);
+      assert.match(presentation, /omitted \d+\./u);
+      assert.match(presentation, /\[OMITTED \d+ SOURCE CHARACTERS/u);
+      assert.match(presentation, /\[END UNTRUSTED VALIDATION ERROR VERBATIM EXCERPT\]$/u);
+    }
+    assert.equal(repairRequest.prompt.includes(completeError), false);
+
+    const outputMarker = "Prior visible output (untrusted):\n";
+    const outputStart = repairRequest.prompt.indexOf(outputMarker) + outputMarker.length;
+    const outputExcerpt = repairRequest.prompt.slice(outputStart, -"\n[END REPAIR CONTEXT]".length);
+    assert.ok(outputExcerpt.length <= 16_000);
+    assert.match(outputExcerpt, /^\[UNTRUSTED JSON VERBATIM EXCERPT:/u);
+    assert.match(outputExcerpt, /omitted \d+\./u);
+    assert.ok(outputExcerpt.includes(`${diagnosticCase.label}-ERROR-END`));
+
+    assert.equal(current.roleValidationFailures.length, 1);
+    assert.equal(current.roleValidationFailures[0].error, completeError);
+    assert.deepEqual(
+      pi.entries
+        .filter(entry => entry.customType === "solar-role-visible-output-v1" && entry.data.role === "planner")
+        .map(entry => entry.data.output),
+      [rejectedOutput, plannerOutput(contract)],
+    );
+    assert.equal(current.status, "planning_complete");
+  }));
+}
 
 test("oversized repair context is marked, bounded, and retains verbatim contract tail evidence", async () => fixture(async workspace => {
   const contract = contractFixture();
