@@ -41,6 +41,7 @@ registerHooks({
 
 const { installLiteRuntime } = await import("./extension.ts");
 const { WORKFLOW_STATE, recoverWorkflow } = await import("./workflow.ts");
+const { renderHarnessRolePrompt } = await import("./harness.ts");
 
 const SOLAR_MODEL = {
   provider: "upstage",
@@ -352,6 +353,7 @@ function readyProposal(answer) {
     changeReason: "The current answer fixes the outcome, constraint, and observable success.",
     question: "",
     strategy: "ready",
+    currentGapId: null,
     materialState: { topics: [{ topicId: "result", kind: "decision", normalizedValue: "create the exact bounded local result", sourceContentHashes: [hash] }], gaps: [], claims: [] },
     readiness: { status: "ready", goalSentence: "Create the exact bounded local result.", materialGaps: [], contradictions: [] },
   };
@@ -390,6 +392,88 @@ function assertToolSucceeded(result, label) {
   const text = result?.content?.filter(item => item.type === "text").map(item => item.text).join("\n") ?? "";
   assert.notEqual(result?.details?.workflowValidationError, true, `${label} failed: ${text}`);
 }
+
+test("explicit no-gap wire values preserve all interview readiness guards", async () => fixture(async workspace => {
+  const { pi } = installHost(workspace, passingResponder(contractFixture()));
+  await startAndInitialize(pi, "/skill:solar-interview --plan-only Create the exact bounded local result.");
+  const entry = pi.entries.find(item => item.type === "message" && item.message.role === "user");
+  const answer = { id: entry.id, text: entry.message.content[0].text };
+  const missing = readyProposal(answer);
+  delete missing.currentGapId;
+  assert.equal((await pi.callTool("solar_interview_round", missing)).details.interviewValidationError, true);
+  const empty = { ...readyProposal(answer), currentGapId: "" };
+  assert.equal((await pi.callTool("solar_interview_round", empty)).details.interviewValidationError, true);
+  const unresolved = { ...openProposal([answer], "question", "What defines success?"), currentGapId: null };
+  assert.equal((await pi.callTool("solar_interview_round", unresolved)).details.interviewValidationError, true);
+  const ready = readyProposal(answer);
+  const result = await pi.callTool("solar_interview_round", ready);
+  assertToolSucceeded(result, "canonical ready wire");
+  assert.equal(result.details.state.status, "awaiting_goal_confirmation");
+  assert.equal(result.details.state.proposal.currentGapId, undefined);
+  assert.equal(ready.currentGapId, null, "Wire input is not mutated during domain normalization");
+  assert.equal(pi.latest("solar-interview-closure-v2"), undefined);
+}));
+
+test("the planning dispatcher cannot read workspace or package implementation files", async () => fixture(async workspace => {
+  const { pi } = installHost(workspace, passingResponder(contractFixture()));
+  await startAndInitialize(pi, "/skill:solar-plan --plan-only Create a reviewed local plan.");
+  assert.deepEqual(pi.activeTools.sort(), ["solar_plan_ready", "solar_revisit"].sort());
+  for (const file of ["records.json", "harness/skills/planner/SKILL.md"]) {
+    const denied = await pi.emit("tool_call", { type: "tool_call", toolCallId: `denied-${file}`, toolName: "read", input: { path: file } });
+    assert.equal(denied.block, true);
+    assert.equal(denied.terminate, true);
+  }
+}));
+
+test("active stages bind only their packaged role and inactive conversations do not", async () => fixture(async workspace => {
+  const { pi } = installHost(workspace, passingResponder(contractFixture()));
+  await pi.emit("session_start", { type: "session_start", reason: "startup" });
+  const event = { type: "before_agent_start", prompt: "Continue the current task.", systemPrompt: "base" };
+  assert.equal(await pi.emit("before_agent_start", event), undefined);
+  await pi.startInput("/skill:solar-research Record a local decision. --research-only --local-only");
+  const research = await pi.emit("before_agent_start", event);
+  assert.equal(research.systemPrompt, `base\n${renderHarnessRolePrompt("researcher")}`);
+  assert.ok(!research.systemPrompt.includes(renderHarnessRolePrompt("executor")));
+  await pi.command("solar-workflow", "stop");
+  assert.equal(await pi.emit("before_agent_start", event), undefined);
+  await pi.startInput("/skill:solar-interview Clarify the local output. --plan-only");
+  const interview = await pi.emit("before_agent_start", event);
+  assert.equal(interview.systemPrompt, `base\n${renderHarnessRolePrompt("interviewer")}`);
+  assert.ok(!interview.systemPrompt.includes(renderHarnessRolePrompt("researcher")));
+}));
+
+test("shutdown uses the current event context rather than a captured expired context", async () => fixture(async workspace => {
+  const { pi } = installHost(workspace, passingResponder(contractFixture()));
+  await pi.emit("session_start", { type: "session_start", reason: "startup" });
+  const cleared = [];
+  const shutdownContext = { ...pi.ctx, ui: {
+    setWidget: name => cleared.push(name),
+    setStatus: name => cleared.push(name),
+  } };
+  pi.ctx.ui.setWidget = () => { throw new Error("Captured context is stale"); };
+  pi.ctx.ui.setStatus = () => { throw new Error("Captured context is stale"); };
+  await pi.emit("session_shutdown", { type: "session_shutdown" }, shutdownContext);
+  assert.deepEqual(cleared, ["solar-interview", "solar-workflow", "solar-rate", "solar-workflow"]);
+  const expiredContext = new Proxy({}, { get() { throw new Error("Post-shutdown context is stale"); } });
+  const count = pi.entries.length;
+  await pi.emit("turn_end", { type: "turn_end" }, expiredContext);
+  await pi.emit("agent_settled", { type: "agent_settled" }, expiredContext);
+  assert.equal(pi.entries.length, count, "Late callbacks cannot write state after shutdown");
+}));
+
+test("planning sessions receive their dedicated package roles rather than the dispatcher skill", async () => fixture(async workspace => {
+  const { pi, roleStats } = installHost(workspace, passingResponder(contractFixture()));
+  await startAndInitialize(pi, "/skill:solar-plan Produce a local result. --plan-only");
+  const dispatcher = await pi.emit("before_agent_start", { type: "before_agent_start", prompt: "Continue.", systemPrompt: "base" });
+  assert.match(dispatcher.systemPrompt, /planning dispatcher, not the Planner/);
+  assertToolSucceeded(await pi.callTool("solar_plan_ready", {}), "defined planning roles");
+  assert.deepEqual(roleStats.requests.map(request => request.role), ["planner", "approach_reviewer", "critic"]);
+  for (const request of roleStats.requests) {
+    assert.equal(request.systemPrompt, renderHarnessRolePrompt(request.role));
+    assert.doesNotMatch(request.prompt, /<solar-pro4-reasoning>/);
+  }
+  assert.equal(pi.workflow().status, "planning_complete");
+}));
 
 test("host validates and atomically persists ResearchContractV2 before research-only completion", async () => fixture(async workspace => {
   const contract = contractFixture();
@@ -878,6 +962,21 @@ async function reviewedExecution(workspace, { gateKind = "command", gateCount = 
   assert.equal(pi.workflow().status, "active");
   return { pi, contract };
 }
+
+test("only approved execution binds the Executor and retains exact tool capabilities", async () => fixture(async workspace => {
+  const { pi } = await reviewedExecution(workspace);
+  const result = await pi.emit("before_agent_start", {
+    type: "before_agent_start",
+    prompt: pi.sentUserMessages.at(-1).message,
+    systemPrompt: "base",
+  });
+  assert.equal(result.systemPrompt, `base\n${renderHarnessRolePrompt("executor")}`);
+  assert.deepEqual(pi.activeTools.sort(), ["write", "solar_step_done", "solar_revisit"].sort());
+  assert.equal((await pi.emit("tool_call", {
+    type: "tool_call", toolCallId: "harness-outside", toolName: "write",
+    input: { path: "undeclared.txt", content: "not authorized" },
+  })).block, true);
+}));
 
 test("the actual resume command restores reloaded execution and final-review verification states", async () => fixture(async workspace => {
   const { pi } = await reviewedExecution(workspace, { gateKind: "rubric" });

@@ -9,6 +9,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { prepareReloadFixture } from "./reload-fixture.mjs";
 import { recoverWorkflow } from "../runtime/workflow.ts";
+import { renderHarnessRolePrompt } from "../runtime/harness.ts";
 
 const TEST_PREFIX = "pi-solar-smoke-";
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/u;
@@ -211,6 +212,7 @@ function interviewProposal(payload) {
     changeReason: "The current answer states the bounded local outcome, constraint, and observable success.",
     question: "",
     strategy: "ready",
+    currentGapId: null,
     materialState: {
       topics: [{ topicId: "local-goal", kind: "decision", normalizedValue: "produce one local evidence-linked learning goal without network access", sourceContentHashes: [sha256(latest.text)] }],
       gaps: [],
@@ -278,6 +280,7 @@ async function startBackend() {
 
         const role = parseRoleMetadata(payload);
         if (role) {
+          assert.ok(textValues(payload.messages.filter(message => message.role === "system")).join("\n").includes(renderHarnessRolePrompt(role.role)), `Installed planning session omitted the complete ${role.role} agent/skill`);
           assert.ok(!payload.tools || payload.tools.length === 0, "Isolated planning roles must be tool-free");
           if (role.role === "planner") {
             streamResponse(response, SOLAR_MODEL, { text: JSON.stringify({ planMarkdown: planText(), resolutions: [] }) });
@@ -288,6 +291,13 @@ async function startBackend() {
         }
 
         const names = new Set((payload.tools ?? []).map(tool => tool.function?.name));
+        if (names.has("solar_plan_ready")) assert.ok(!names.has("read"), "The planning dispatcher must not read files; the host supplies worker provenance");
+        const mainRole = names.has("solar_interview_round") ? "interviewer" : names.has("solar_research_ready") ? "researcher" : undefined;
+        if (mainRole) {
+          const system = textValues(payload.messages.filter(message => message.role === "system")).join("\n");
+          assert.ok(system.includes(renderHarnessRolePrompt(mainRole)), `Installed main session omitted the complete ${mainRole} agent/skill`);
+          assert.ok(!system.includes(renderHarnessRolePrompt(mainRole === "researcher" ? "interviewer" : "researcher")), "A prior stage role leaked into the current system prompt");
+        }
         if (names.has("solar_interview_round")) streamResponse(response, SOLAR_MODEL, { tool: "solar_interview_round", arguments: interviewProposal(payload) });
         else if (names.has("solar_research_ready")) streamResponse(response, SOLAR_MODEL, { tool: "solar_research_ready", arguments: researchSubmission(payload) });
         else if (names.has("solar_plan_ready")) streamResponse(response, SOLAR_MODEL, { tool: "solar_plan_ready", arguments: {} });

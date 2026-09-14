@@ -4,6 +4,18 @@ pi-solar-workflow is a Windows-only Pi 0.85.1 controller for exactly four skills
 
 ## Commands and authority
 
+### Harness roles
+
+The four public skills are stage dispatchers. The package's `harness/agents.json` defines six roles and links each to one dedicated `harness/skills/<role>/SKILL.md`. `runtime/harness.ts` loads these explicit package files without workspace skill discovery. A missing or invalid role/skill fails closed.
+
+Research, interview and execution bind their current role to the main-session system prompt; this does not create independent child contexts for those stages. Planning loads the Planner and the two distinct reviewer skills into the existing isolated Pi sessions while keeping SDK `noSkills` and tool isolation enabled. Role-specific procedures are not duplicated in the public stage skills or controller constants.
+
+The main planning dispatcher has only `solar_plan_ready` and `solar_revisit`, not filesystem `read`. The host selects provenance and loads private worker skills; the model must not locate those package files itself.
+
+At the interview tool boundary, `currentGapId` is required: explicit `null` for a substantively ready report, or the exact nonempty readiness gap/contradiction ID otherwise. The host converts null to the existing domain V2 absent-gap representation before running all readiness, source and freshness validators. Null cannot turn an unresolved report into a ready one.
+
+The controller retains sole authority over state, bounded dispatch, review identities, approval and final verification. See [the role definitions and experiment protocol](HARNESS_DESIGN.md). Actual model quality must be measured separately from structural controller tests.
+
 | Command | Effect |
 | --- | --- |
 | `/solar-workflow status` | Shows the current stage, reviewed/approved revision, detours, steps, and budgets. |

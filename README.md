@@ -2,16 +2,20 @@
 
 **Research the context. Sharpen the intention. Approve a plan. Verify the current result.**
 
-`pi-solar-workflow` is a Windows-only, four-skill workflow controller for [pi](https://github.com/earendil-works/pi) 0.85.1 and Upstage Solar Pro4 Max. Its public stages are **research -> interview -> plan -> execute**:
+`pi-solar-workflow` is a Windows-only, role-and-skill harness for [pi](https://github.com/earendil-works/pi) 0.85.1 and Upstage Solar Pro4 Max. Its four public stages are **research -> interview -> plan -> execute**:
 
 - `solar-research`
 - `solar-interview`
 - `solar-plan`
 - `solar-execute`
 
+Six explicit agent definitions in [harness/agents.json](harness/agents.json) bind dedicated procedural skills. Researcher, Interviewer and Executor run as stage-specific main-session roles; Planner, Approach Reviewer and Critic run in fresh tool-free sessions. The existing controller is the deterministic orchestrator, not an extra model agent. Internal skills are loaded explicitly from the package rather than exposed as additional public commands. See the [design and live experiment protocol](docs/HARNESS_DESIGN.md); role separation is a hypothesis to test, not a performance guarantee.
+
 The main role and the Planner, Approach Reviewer, and Critic roles must resolve to registry-configured Upstage `solar-pro4` with Max thinking or stop truthfully. The three planning roles use fresh, separate Pi sessions, but they use the same model and supplied evidence; their reviews are correlated self-review signals, not independent consensus or proof.
 
 This project is experimental and independent of pi, Upstage, GJC, and OMX. It does not install credentials, change model/provider configuration, patch the Pi SDK, or change GJC. Current controller behavior and model quality must be verified separately; documentation is not a test result.
+
+**Measured status:** the harness has not demonstrated superiority or convergence. Real full-loop trials encountered invalid model contracts and deadlines; passing regression tests does not establish high-quality autonomous execution. Read the [actual experiment results and limitations](docs/HARNESS_EXPERIMENTS.md) before adoption.
 
 ## Install into Pi
 

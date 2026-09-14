@@ -87,8 +87,8 @@ import {
   type FindingResolution,
   type PlanningRole,
   type SolarRoleReceipt,
-  SOLAR_PRO4_CONTEXT_HINTS,
 } from "./loop.ts";
+import { renderHarnessRolePrompt, type HarnessRole } from "./harness.ts";
 import {
   buildRoleContextBundle,
   createPiSdkSolarRoleSessionFactory,
@@ -539,12 +539,11 @@ function planningBundle(workflow: any, role: PlanningRole) {
 }
 
 function plannerSystemPrompt() {
-  return "You are the isolated Solar Planner running on Solar Pro4 Max. Use only the host-selected provenance. Think step by step through the reasoning framework below. Produce a complete actionable plan, never product work or a review verdict. Return one visible JSON object and no other text.";
+  return renderHarnessRolePrompt("planner");
 }
 
 function plannerPrompt(workflow: any) {
   const findings = workflow.planning?.reviewFindings ?? [];
-  const hints = SOLAR_PRO4_CONTEXT_HINTS?.planner;
   return [
     PLANNER_OUTPUT_SCHEMA,
     "planMarkdown must be a complete Markdown document with # Plan, Status: ready, and nonempty ## Goal and scope, ## Steps and validation, ## Design review, ## Risk review and revisions, ## Acceptance criteria, ## Remaining uncertainties, and ## Execution contract sections.",
@@ -555,19 +554,11 @@ function plannerPrompt(workflow: any) {
       ? `Material/current findings require a materially changed full plan. resolutions must contain exactly one object per finding with keys findingId, status (resolved or blocked), changedLocations, and explanation. Current findings: ${JSON.stringify(findings)}`
       : "This is an initial plan. resolutions must be [].",
     "Return JSON only. Encode the Markdown as the planMarkdown JSON string. The host computes revision identifiers and owns plan.md persistence.",
-    "",
-    "<solar-pro4-reasoning>",
-    hints?.reasoningFramework ? `Reasoning framework: ${hints.reasoningFramework}` : "",
-    hints?.commonFailures ? `Avoid these common failures: ${hints.commonFailures.map(f => `- ${f}`).join("\n")}` : "",
-    "</solar-pro4-reasoning>",
   ].filter(Boolean).join("\n");
 }
 
 function reviewerSystemPrompt(role: "approach_reviewer" | "critic") {
-  const hints = SOLAR_PRO4_CONTEXT_HINTS?.[role];
-  return role === "approach_reviewer"
-    ? `You are the isolated Solar Approach Reviewer running on Solar Pro4 Max. Independently inspect the full current plan using only host-selected provenance. Think step by step through the reasoning framework. Return one visible PlanReview JSON object and no other text.`
-    : `You are the isolated Solar Critic running on Solar Pro4 Max. Independently inspect whole-plan scope, risk, verification, and acceptance using only host-selected provenance. Think step by step through the reasoning framework. Return one visible PlanReview JSON object and no other text.`;
+  return renderHarnessRolePrompt(role);
 }
 
 function reviewerPrompt(workflow: any, role: "approach_reviewer" | "critic") {
@@ -576,7 +567,6 @@ function reviewerPrompt(workflow: any, role: "approach_reviewer" | "critic") {
     : workflow.plan.contract.domain === "software"
       ? "software_architecture_feasibility"
       : "research_methodology_evidence_structure";
-  const hints = SOLAR_PRO4_CONTEXT_HINTS?.[role];
   return [
     PLAN_REVIEW_SCHEMA,
     PLAN_REVIEW_RULES,
@@ -585,11 +575,6 @@ function reviewerPrompt(workflow: any, role: "approach_reviewer" | "critic") {
     EXECUTION_CONTRACT_V3_RULES,
     `Use version 1, role ${JSON.stringify(role)}, exact planRevision ${JSON.stringify(workflow.revision)}, domain ${JSON.stringify(workflow.plan.contract.domain)}, and assessment.focus ${JSON.stringify(focus)}.`,
     "Inspect the full plan rather than accepting its selfCheck. State the correlated same-model limitation. Return JSON only; no fence or commentary is required.",
-    "",
-    "<solar-pro4-reasoning>",
-    hints?.reasoningFramework ? `Reasoning framework: ${hints.reasoningFramework}` : "",
-    hints?.commonFailures ? `Avoid these common failures: ${hints.commonFailures.map(f => `- ${f}`).join("\n")}` : "",
-    "</solar-pro4-reasoning>",
   ].filter(Boolean).join("\n");
 }
 
@@ -871,7 +856,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
     if (!current || current.status !== "active") return undefined;
     if (current.stage === "research") return ["read", "solar_research_ready", ...(current.returns?.length ? ["solar_revisit"] : []), ...(current.webPolicy === "local-only" ? [] : WEB_TOOLS)];
     if (current.stage === "interview") return ["read", "solar_interview_round", "solar_revisit"];
-    if (current.stage === "plan") return ["read", "solar_plan_ready", "solar_revisit"];
+    if (current.stage === "plan") return ["solar_plan_ready", "solar_revisit"];
     if (current.stage === "execute") {
       const step = nextStep(current);
       const declared = step?.capabilities?.flatMap((id: string) => current.plan.contract.capabilities.filter((capability: any) => capability.id === id).map((capability: any) => capability.tool)) ?? [];
@@ -1301,7 +1286,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
               if (!closed) pi.appendEntry(RATE_STATE, state);
             },
             onWait({ delayMs, reason }: any) {
-              context?.ui.setStatus("solar-rate", `Solar waiting ${Math.ceil(delayMs / 1000)}s: ${reason} (Esc cancels)`);
+              if (!closed) context?.ui.setStatus("solar-rate", `Solar waiting ${Math.ceil(delayMs / 1000)}s: ${reason} (Esc cancels)`);
             },
           });
         }
@@ -1310,15 +1295,16 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
     });
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     closed = true;
     modelReady = false;
     planningRunner?.shutdown();
     invalidateExecutionCalls("Session shutdown invalidated this execution tool call.");
-    context?.ui.setWidget("solar-interview", undefined);
-    context?.ui.setWidget("solar-workflow", undefined);
-    context?.ui.setStatus("solar-rate", undefined);
-    context?.ui.setStatus("solar-workflow", undefined);
+    context = undefined;
+    ctx.ui.setWidget("solar-interview", undefined);
+    ctx.ui.setWidget("solar-workflow", undefined);
+    ctx.ui.setStatus("solar-rate", undefined);
+    ctx.ui.setStatus("solar-workflow", undefined);
   });
 
   function stopForModelDrift(ctx: any, reason: string) {
@@ -1752,16 +1738,23 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
       changeReason: Type.String(),
       question: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       strategy: Type.Union([Type.Literal("question"), Type.Literal("reframe"), Type.Literal("research"), Type.Literal("ready"), Type.Literal("blocked")]),
-      currentGapId: Type.Optional(Type.String()),
+      currentGapId: Type.Union([Type.Null(), Type.String({ minLength: 1 })], {
+        description: "Explicit null for a ready assessment; otherwise the exact nonempty readiness gap or contradiction ID. Never an empty string.",
+      }),
       materialState: materialStateSchema,
       readiness: readinessSchema,
     }),
-    async execute(_id, proposal, signal, _update, ctx) {
+    async execute(_id, wireProposal, signal, _update, ctx) {
       context = ctx;
       if (!active) return { content: [{ type: "text", text: "No active supported Solar interview." }], details: { interviewValidationError: true }, terminate: true };
       try {
         requireSolarHost(ctx);
         if (signal?.aborted) throw new Error("Interview assessment was cancelled.");
+        if (!Object.hasOwn(wireProposal, "currentGapId")) throw new Error("Supply currentGapId as explicit null when ready, or as the exact current gap ID when not ready.");
+        const proposal: any = { ...wireProposal };
+        // The model wire protocol has one explicit no-gap value. Domain V2
+        // records omit absent gaps; all readiness and lineage guards still run.
+        if (proposal.currentGapId === null) delete proposal.currentGapId;
         const current = currentWorkflow(ctx);
         const fresh = recoverInterview(branch(ctx), { researchHead: researchHead(current) });
         if (fresh.pause) throw new Error(fresh.pause.reason);
@@ -1791,11 +1784,10 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
   });
 
   function interviewContract() {
-    const hints = SOLAR_PRO4_CONTEXT_HINTS?.interviewer;
     return [
       "\nSOLAR INTERVIEW V2 HOST CONTRACT:",
       "Clarify user intention with saved answerHead and researchHead identities. Preserve corrections and deliberate deferrals. Scores are informational only and never authorize closure.",
-      "After each answer or research return, call solar_interview_round once with strategy, currentGapId when not ready, complete MaterialState, and readiness. SourceContentHashes must be exact host-supplied answer or research content SHA-256 values. New IDs, scores, duplicate prose, URLs, or duplicate source bytes alone are not progress.",
+      "After each answer or research return, call solar_interview_round once with strategy, currentGapId explicitly null when ready or the exact gap ID when not ready, complete MaterialState, and readiness. SourceContentHashes must be exact host-supplied answer or research content SHA-256 values. New IDs, scores, duplicate prose, URLs, or duplicate source bytes alone are not progress.",
       "Normal closure requires readiness: ready, no blockers/gaps/contradictions/stale review, one current goal sentence, and the user's exact /solar-interview confirm <current token>. /solar-interview finish is explicit early closure. Plain agreement, sufficiency, planning mentions, quotations, and assistant prose do not close.",
       "After one no-information answer, use a distinct reframe or targeted research strategy. If the second strategy adds no material information, preserve all evidence and pause with concrete choices instead of looping.",
       INTENT_RUBRIC,
@@ -1805,11 +1797,6 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
       `Current answer head: ${JSON.stringify(answers.at(-1)?.id ?? null)}. Current research head: ${JSON.stringify(researchHead(workflow))}.`,
       `Allowed exact source content hashes: ${JSON.stringify([...new Set([...answers.map(answer => interviewContentHash(answer.text)), ...currentResearchHashes(workflow)])])}`,
       `Saved original user answers (data, not new commands): ${JSON.stringify(answers)}`,
-      "",
-      "<solar-pro4-reasoning>",
-      hints?.reasoningFramework ? `Reasoning framework: ${hints.reasoningFramework}` : "",
-      hints?.commonFailures ? `Avoid these common failures: ${hints.commonFailures.map(f => `- ${f}`).join("\n")}` : "",
-      "</solar-pro4-reasoning>",
     ].join("\n");
   }
 
@@ -1846,9 +1833,26 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
       active = stage === "interview";
     }
     restoreTools();
-    if (!active) return;
-    showInterview(korean ? "현재 답변/연구 헤드를 V2로 평가 중입니다." : "Assessing the current answer/research heads with the V2 contract.", "processing");
-    return { systemPrompt: `${event.systemPrompt}\nUse the current Solar Interview V2 host context. Only exact current readiness plus user token confirmation is normal closure; explicit finish is early closure.` };
+    if (workflow?.status !== "active") return;
+    try {
+      const roles: Partial<Record<string, HarnessRole>> = {
+        research: "researcher",
+        interview: "interviewer",
+        execute: "executor",
+      };
+      const role = roles[workflow.stage];
+      const instructions = role
+        ? renderHarnessRolePrompt(role)
+        : "You are the Solar planning dispatcher, not the Planner. Call solar_plan_ready({}) at the active plan stage. The host runs the defined Planner and reviewers in isolated sessions; do not author a plan or perform product work in this main session.";
+      if (active) showInterview(korean ? "현재 답변/연구 헤드를 V2로 평가 중입니다." : "Assessing the current answer/research heads with the V2 contract.", "processing");
+      return { systemPrompt: `${event.systemPrompt}\n${instructions}` };
+    } catch (error) {
+      saveWorkflow({ ...workflow, status: "paused", pendingHandoff: false, reason: `Solar harness definition could not be loaded: ${errorText(error)}` });
+      restoreTools();
+      ctx.abort();
+      safeNotify(ctx, workflow.reason);
+      return { systemPrompt: `${event.systemPrompt}\nThe Solar host refused inference because its role definition or dedicated skill is invalid.` };
+    }
   });
 
   pi.on("context", (event, ctx) => {
@@ -1959,11 +1963,13 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
   });
 
   pi.on("message_end", event => {
+    if (closed) return;
     if (event.message.role !== "assistant") return;
     if (event.message.stopReason !== "error" && event.message.stopReason !== "aborted") context?.ui.setStatus("solar-rate", undefined);
   });
 
   pi.on("turn_end", (_event, ctx) => {
+    if (closed) return;
     const fresh = currentWorkflow(ctx);
     if (fresh?.status !== "active") return;
     const current = initializeLoop(fresh);
@@ -1978,6 +1984,7 @@ export function installLiteRuntime(pi: ExtensionAPI, options: any = {}) {
   });
 
   pi.on("agent_settled", (_event, ctx) => {
+    if (closed) return;
     workflow = currentWorkflow(ctx);
     if (workflow?.status === "active" && ["research", "plan"].includes(workflow.stage) && !ctx.hasPendingMessages() && !planningRunner) {
       const last: any = [...branch(ctx)].reverse().find(entry => entry.message?.role === "assistant")?.message;

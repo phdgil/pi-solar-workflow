@@ -12,6 +12,8 @@
 !/docs/WORKFLOW.md
 !/docs/REFERENCES.md
 !/docs/VALIDATION.md
+!/docs/HARNESS_DESIGN.md
+!/docs/HARNESS_EXPERIMENTS.md
 !/runtime/
 /runtime/*
 !/runtime/extension.ts
@@ -22,6 +24,7 @@
 !/runtime/workflow.ts
 !/runtime/loop.ts
 !/runtime/roles.ts
+!/runtime/harness.ts
 !/runtime/web-research.ts
 !/runtime/document-research.ts
 !/runtime/*.test.mjs
@@ -33,6 +36,8 @@
 !/skills/solar-execute/
 /skills/*/*
 !/skills/*/SKILL.md
+!/harness/
+!/harness/**
 !/examples/
 /examples/*
 !/examples/models.upstage.json
@@ -41,6 +46,7 @@
 !/tests/package.test.mjs
 !/tests/pi-smoke.mjs
 !/tests/reload-fixture.mjs
+!/tests/harness-experiment.test.mjs
 !/tests/session-keys.test.ps1
 !/tests/install-session-commands.test.ps1
 !/tests/session-commands.test.mjs
@@ -49,3 +55,5 @@
 /scripts/*
 !/scripts/Session-Keys.psm1
 !/scripts/Install-Session-Commands.ps1
+!/scripts/harness-experiment.mjs
+!/scripts/harness-fixtures.mjs

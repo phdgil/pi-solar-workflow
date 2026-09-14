@@ -7,6 +7,7 @@ pi-solar-lite's original work is licensed under the [MIT License](LICENSE). The 
 - pi-coding-agent, pi-tui, and TypeBox are host-provided peers. Their library code is not vendored in this repository or release archive.
 - GJC and Ouroboros informed the adapted interview/planning instructions and ambiguity approach. Their notices are retained here conservatively; their complete harnesses are not distributed.
 - pi-code-planner, pi-autoresearch, and pi-interview were evaluated but are not shipped.
+- [revfactory/harness](https://github.com/revfactory/harness) (Apache-2.0) supplied the requested meta-harness design methodology: audit, role separation, dedicated skills, orchestration and comparative evaluation. Its Claude Code plugin, agent-team APIs, templates and source files are not vendored. The Pi role registry, loader and procedural skills are original project adaptations; the methodological source is recorded in [the harness design](docs/HARNESS_DESIGN.md).
 - @piex-dev/goal was reused only in a separate local experimental controller, which is excluded from v0.1.0.
 - oh-my-codex is a reference/development environment, not a runtime dependency. No OMX or pi-interview source is bundled; their metadata-only license evidence must not be treated as a supplied canonical notice for future copying.
 - Consult [the reference audit](docs/REFERENCES.md) before adding upstream source or dependencies. This is not a blanket license for their transitive dependencies, assets, trademarks, hosted services, or models.

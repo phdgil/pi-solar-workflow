@@ -26,6 +26,19 @@ test("relative runtime imports are explicitly shipped", () => {
   }
 });
 
+test("all private role definitions and skills are shipped but not publicly discovered", () => {
+  const filename = "harness/agents.json";
+  assert.ok(manifest.files.includes(filename));
+  const registry = JSON.parse(readFileSync(path.join(root, filename), "utf8"));
+  assert.equal(registry.agents.length, 6);
+  for (const agent of registry.agents) {
+    assert.ok(manifest.files.includes(agent.skill), `Unshipped dedicated skill: ${agent.skill}`);
+    assert.ok(existsSync(path.join(root, agent.skill)), `Missing dedicated skill: ${agent.skill}`);
+    assert.ok(!agent.skill.startsWith("skills/"), "Internal skills must not compete with public stage dispatch");
+  }
+  assert.ok(manifest.files.includes("runtime/harness.ts"));
+});
+
 test("release manifest loads four skills and exactly the shipped runtime", () => {
   assert.equal(manifest.version, "0.3.0");
   assert.equal(manifest.name, "pi-solar-workflow");
@@ -36,6 +49,8 @@ test("release manifest loads four skills and exactly the shipped runtime", () =>
     const text = readFileSync(path.join(root, "skills", name, "SKILL.md"), "utf8");
     assert.ok(text.startsWith(`---\nname: ${name}\n`));
     assert.match(text, /description: /);
+    const description = /^description: (.+)$/m.exec(text)?.[1];
+    assert.equal(typeof JSON.parse(description), "string", "Quote descriptions as JSON-compatible YAML scalars so embedded colons cannot disable skill discovery");
   }
   assert.ok(existsSync(path.join(root, manifest.pi.extensions[0])));
 });
