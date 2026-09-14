@@ -228,3 +228,7 @@ C15는 같은 product와 새 heldout protocol로 일곱 사례의 세 회차를 
 보정 후 305/305 회귀 검사와 installed-Pi smoke가 통과했다. 실제 runner의 승인·완료 16/16 검사도 유지했다. 별도 임시 mirror에서는 변경하지 않은 C15 product에 새 회귀 검사를 적용하여 blocked finding 한 건, privacy 교차 두 건, reviewer/진단 한도 네 건의 assertion 실패를 확인했다. 초기 mirror의 누락된 test dependency 오류도 보존하고 구분했다. Reviewer 검증 결과의 정규화가 원래 JSON과 충돌하지 않도록, callback은 검증만 수행한 뒤 원래 parsed value를 commit에 전달한다. 이 증거는 보정의 회귀·통합 검증이며 새로운 real Solar 성공 횟수가 아니다.
 
 C16 corrected-product의 planning 진단도 593237 ms / 8/12로 실패했다. Planner 세 시도는 각각 180000 ms 제한에 도달했고, 완료된 한 후보는 읽을 `records.json`을 step output으로 선언하면서 대응하는 write/command capability가 없어 거절됐다. Controller 보정이 이 모델의 시간 제한이나 계약 작성 오류를 없앴다는 증거는 없다. 새 heldout protocol 동결 전 진단이므로 수렴 횟수에 포함하지 않는다.
+
+C17 첫 회차의 중간 관측에서는 research가 11766 ms / 11/11, interview가 320999 ms / 12/12로 통과했고, planning은 722379 ms / 8/12로 실패했다. Summary는 실제 승인과 실행 완료에 도달했지만 942325 ms / 15/16 실패로 유지한다. Planner 한 번과 Critic 두 번의 timeout이 남아 `provider_failures_absent`를 통과하지 못했다.
+
+이 summary에서는 새 protocol의 **실제 Solar host grant**가 관측됐다. 발행된 `harness-8528` 요청의 직전 watermark는 보존 이력 index 73, 정확한 workflow/revision/artifact table의 execute/active grant는 index 74, 관측 leaf는 index 102였다. 독립 완료 판정의 현행 권한, 실제 plan bytes, 모든 step/gate, final/acceptance manifests와 finalReview digest 검사가 모두 통과했다. 이는 loopback만이 아닌 live 승인·완료 경로의 증거지만, 실패 run을 성공으로 재등급하거나 전체 matrix 수렴으로 간주하지 않는다.
