@@ -7,8 +7,8 @@ const CASE_ORDER = [
   "plan-software",
   "execute-summary",
   "execute-inventory-heldout",
-  "execute-module-alias-heldout",
-  "execute-access-matrix-heldout",
+  "execute-fresh-021a-heldout",
+  "execute-fresh-021b-heldout",
 ];
 
 const SUMMARY_INPUT = [
@@ -27,40 +27,22 @@ const INVENTORY_INPUT = [
   { sku: "cd-2", location: "south", quantity: 1 },
 ];
 
-const MODULE_ALIAS_INPUT = {
-  aliases: [
-    { key: "@core/", target: "./src/core/" },
-    { key: "legacy-api", target: "./compat/api.mjs" },
-    { key: "@core/ui/", target: "./src/widgets/" },
-    { key: "unused-exact", target: "./unused.mjs" },
-    { key: "@test/", target: "./tests/" },
-  ],
-  imports: [
-    { id: "widget", specifier: "@core/ui/button.mjs" },
-    { id: "legacy-subpath", specifier: "legacy-api/v2" },
-    { id: "helper", specifier: "@core/math/add.mjs" },
-    { id: "raw-relative", specifier: "./local.mjs" },
-    { id: "legacy", specifier: "legacy-api" },
-    { id: "test-root", specifier: "@test/" },
-    { id: "lookalike", specifier: "@coreless/file.mjs" },
-  ],
+const POLYNOMIAL_INPUT = {
+  left: [2, -1, 0, 3],
+  right: [-2, 2, 1],
+  points: [2, -1, 0],
 };
 
-const ACCESS_MATRIX_INPUT = {
-  roles: [
-    { id: "auditor", allow: ["audit:read", "repo:read"], deny: ["repo:write"] },
-    { id: "contributor", allow: ["issue:write", "repo:read", "repo:write"], deny: [] },
-    { id: "restricted", allow: ["build:run"], deny: ["build:run", "repo:write"] },
-    { id: "observer", allow: [], deny: ["audit:read"] },
-    { id: "support", allow: ["issue:read", "issue:write"], deny: [] },
-  ],
-  accounts: [
-    { id: "fay", roles: ["support", "contributor"] },
-    { id: "bea", roles: ["restricted", "contributor"] },
-    { id: "dev", roles: [] },
-    { id: "amy", roles: ["contributor", "auditor"] },
-    { id: "eli", roles: ["auditor", "observer"] },
-    { id: "cy", roles: ["support", "observer"] },
+const PIXEL_MAP_INPUT = {
+  rows: [
+    "#...###..",
+    ".#..#.#..",
+    "....###..",
+    ".........",
+    "##..#....",
+    "##..##...",
+    "....#..#.",
+    ".......##",
   ],
 };
 
@@ -121,43 +103,28 @@ function inventoryExpected(input) {
 
 const SUMMARY_EXPECTED = summaryExpected(SUMMARY_INPUT);
 const INVENTORY_EXPECTED = inventoryExpected(INVENTORY_INPUT);
-const MODULE_ALIAS_EXPECTED = {
-  resolutions: [
-    { id: "helper", specifier: "@core/math/add.mjs", status: "mapped", alias: "@core/", target: "./src/core/math/add.mjs" },
-    { id: "legacy", specifier: "legacy-api", status: "mapped", alias: "legacy-api", target: "./compat/api.mjs" },
-    { id: "legacy-subpath", specifier: "legacy-api/v2", status: "unmapped", alias: null, target: null },
-    { id: "lookalike", specifier: "@coreless/file.mjs", status: "unmapped", alias: null, target: null },
-    { id: "raw-relative", specifier: "./local.mjs", status: "unmapped", alias: null, target: null },
-    { id: "test-root", specifier: "@test/", status: "mapped", alias: "@test/", target: "./tests/" },
-    { id: "widget", specifier: "@core/ui/button.mjs", status: "mapped", alias: "@core/ui/", target: "./src/widgets/button.mjs" },
+const POLYNOMIAL_EXPECTED = {
+  product: [-4, 6, 0, -7, 6, 3],
+  derivative: [6, 0, -21, 24, 15],
+  evaluations: [
+    { x: -1, value: 0 },
+    { x: 0, value: -4 },
+    { x: 2, value: 144 },
   ],
-  aliasUsage: [
-    { key: "@core/", count: 1 },
-    { key: "@core/ui/", count: 1 },
-    { key: "@test/", count: 1 },
-    { key: "legacy-api", count: 1 },
-    { key: "unused-exact", count: 0 },
-  ],
-  counts: { mapped: 4, unmapped: 3 },
+  degree: 5,
 };
-const ACCESS_MATRIX_EXPECTED = {
-  accounts: [
-    { id: "amy", effective: ["audit:read", "issue:write", "repo:read"], denied: ["repo:write"] },
-    { id: "bea", effective: ["issue:write", "repo:read"], denied: ["build:run", "repo:write"] },
-    { id: "cy", effective: ["issue:read", "issue:write"], denied: ["audit:read"] },
-    { id: "dev", effective: [], denied: [] },
-    { id: "eli", effective: ["repo:read"], denied: ["audit:read", "repo:write"] },
-    { id: "fay", effective: ["issue:read", "issue:write", "repo:read", "repo:write"], denied: [] },
+
+const PIXEL_MAP_EXPECTED = {
+  dimensions: { height: 8, width: 9 },
+  regions: [
+    { anchor: { row: 0, column: 4 }, bounds: { top: 0, left: 4, bottom: 2, right: 6 }, cells: 8, perimeter: 16 },
+    { anchor: { row: 4, column: 0 }, bounds: { top: 4, left: 0, bottom: 5, right: 1 }, cells: 4, perimeter: 8 },
+    { anchor: { row: 4, column: 4 }, bounds: { top: 4, left: 4, bottom: 6, right: 5 }, cells: 4, perimeter: 10 },
+    { anchor: { row: 6, column: 7 }, bounds: { top: 6, left: 7, bottom: 7, right: 8 }, cells: 3, perimeter: 8 },
+    { anchor: { row: 0, column: 0 }, bounds: { top: 0, left: 0, bottom: 0, right: 0 }, cells: 1, perimeter: 4 },
+    { anchor: { row: 1, column: 1 }, bounds: { top: 1, left: 1, bottom: 1, right: 1 }, cells: 1, perimeter: 4 },
   ],
-  permissionUsage: [
-    { permission: "audit:read", accountCount: 1 },
-    { permission: "build:run", accountCount: 0 },
-    { permission: "issue:read", accountCount: 2 },
-    { permission: "issue:write", accountCount: 4 },
-    { permission: "repo:read", accountCount: 4 },
-    { permission: "repo:write", accountCount: 1 },
-  ],
-  counts: { accountCount: 6, withAccess: 5, withoutAccess: 1 },
+  totals: { regions: 6, filledCells: 21, perimeter: 50 },
 };
 
 const SUMMARY_EVALUATOR = `import assert from "node:assert/strict";
@@ -204,115 +171,118 @@ assert.deepEqual(actual, expected);
 console.log("inventory fixture passed");
 `;
 
-const MODULE_ALIAS_EVALUATOR = `import assert from "node:assert/strict";
+const POLYNOMIAL_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const input = JSON.parse(readFileSync("module-aliases.json", "utf8"));
-const actual = JSON.parse(readFileSync("resolved-imports.json", "utf8"));
+const input = JSON.parse(readFileSync("polynomial-job.json", "utf8"));
+const actual = JSON.parse(readFileSync("polynomial-result.json", "utf8"));
 assert.ok(input && typeof input === "object" && !Array.isArray(input));
-assert.deepEqual(Object.keys(input).sort(), ["aliases", "imports"]);
-assert.ok(Array.isArray(input.aliases));
-assert.ok(Array.isArray(input.imports));
-const aliases = new Map();
-for (const alias of input.aliases) {
-  assert.ok(alias && typeof alias === "object" && !Array.isArray(alias));
-  assert.deepEqual(Object.keys(alias).sort(), ["key", "target"]);
-  assert.ok(typeof alias.key === "string" && alias.key.length > 0);
-  assert.ok(typeof alias.target === "string" && alias.target.length > 0);
-  assert.equal(aliases.has(alias.key), false);
-  if (alias.key.endsWith("/")) assert.ok(alias.target.endsWith("/"));
-  aliases.set(alias.key, alias);
-}
-const ids = new Set();
-for (const row of input.imports) {
-  assert.ok(row && typeof row === "object" && !Array.isArray(row));
-  assert.deepEqual(Object.keys(row).sort(), ["id", "specifier"]);
-  assert.ok(typeof row.id === "string" && row.id.length > 0);
-  assert.ok(typeof row.specifier === "string" && row.specifier.length > 0);
-  assert.equal(ids.has(row.id), false);
-  ids.add(row.id);
-}
-const usage = new Map([...aliases.keys()].map(key => [key, 0]));
-const counts = { mapped: 0, unmapped: 0 };
-const resolutions = input.imports.map(row => {
-  const matches = [...aliases.values()]
-    .filter(alias => alias.key.endsWith("/") ? row.specifier.startsWith(alias.key) : row.specifier === alias.key)
-    .sort((left, right) => right.key.length - left.key.length || left.key.localeCompare(right.key, "en"));
-  const selected = matches[0];
-  if (!selected) {
-    counts.unmapped += 1;
-    return { id: row.id, specifier: row.specifier, status: "unmapped", alias: null, target: null };
+assert.deepEqual(Object.keys(input).sort(), ["left", "points", "right"]);
+const assertCoefficients = coefficients => {
+  assert.ok(Array.isArray(coefficients) && coefficients.length > 0);
+  assert.ok(coefficients.every(Number.isSafeInteger));
+  assert.notEqual(coefficients.at(-1), 0);
+};
+assertCoefficients(input.left);
+assertCoefficients(input.right);
+assert.ok(Array.isArray(input.points) && input.points.length > 0);
+assert.ok(input.points.every(Number.isSafeInteger));
+assert.equal(new Set(input.points).size, input.points.length);
+const product = Array(input.left.length + input.right.length - 1).fill(0);
+for (let leftPower = 0; leftPower < input.left.length; leftPower += 1) {
+  for (let rightPower = 0; rightPower < input.right.length; rightPower += 1) {
+    const power = leftPower + rightPower;
+    product[power] += input.left[leftPower] * input.right[rightPower];
+    assert.ok(Number.isSafeInteger(product[power]));
   }
-  counts.mapped += 1;
-  usage.set(selected.key, usage.get(selected.key) + 1);
-  const target = selected.key.endsWith("/")
-    ? selected.target + row.specifier.slice(selected.key.length)
-    : selected.target;
-  return { id: row.id, specifier: row.specifier, status: "mapped", alias: selected.key, target };
-}).sort((left, right) => left.id.localeCompare(right.id, "en"));
-const aliasUsage = [...aliases.keys()]
-  .sort((left, right) => left.localeCompare(right, "en"))
-  .map(key => ({ key, count: usage.get(key) }));
-const expected = { resolutions, aliasUsage, counts };
+}
+const derivative = product.slice(1).map((coefficient, power) => {
+  const value = coefficient * (power + 1);
+  assert.ok(Number.isSafeInteger(value));
+  return value;
+});
+const evaluate = (coefficients, x) => {
+  let value = 0;
+  for (let power = coefficients.length - 1; power >= 0; power -= 1) {
+    value = value * x + coefficients[power];
+    assert.ok(Number.isSafeInteger(value));
+  }
+  return value;
+};
+const evaluations = [...input.points].sort((left, right) => left - right)
+  .map(x => ({ x, value: evaluate(product, x) }));
+const expected = { product, derivative, evaluations, degree: product.length - 1 };
 assert.deepEqual(actual, expected);
-console.log("module alias fixture passed");
+console.log("polynomial fixture passed");
 `;
 
-const ACCESS_MATRIX_EVALUATOR = `import assert from "node:assert/strict";
+const PIXEL_MAP_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const input = JSON.parse(readFileSync("role-assignments.json", "utf8"));
-const actual = JSON.parse(readFileSync("access-matrix.json", "utf8"));
+const input = JSON.parse(readFileSync("pixel-map.json", "utf8"));
+const actual = JSON.parse(readFileSync("region-report.json", "utf8"));
 assert.ok(input && typeof input === "object" && !Array.isArray(input));
-assert.deepEqual(Object.keys(input).sort(), ["accounts", "roles"]);
-assert.ok(Array.isArray(input.roles));
-assert.ok(Array.isArray(input.accounts));
-const roles = new Map();
-const permissionUniverse = new Set();
-for (const role of input.roles) {
-  assert.ok(role && typeof role === "object" && !Array.isArray(role));
-  assert.deepEqual(Object.keys(role).sort(), ["allow", "deny", "id"]);
-  assert.ok(typeof role.id === "string" && role.id.length > 0);
-  assert.equal(roles.has(role.id), false);
-  for (const field of ["allow", "deny"]) {
-    assert.ok(Array.isArray(role[field]));
-    assert.ok(role[field].every(permission => typeof permission === "string" && permission.length > 0));
-    assert.equal(new Set(role[field]).size, role[field].length);
-    for (const permission of role[field]) permissionUniverse.add(permission);
-  }
-  roles.set(role.id, role);
+assert.deepEqual(Object.keys(input), ["rows"]);
+assert.ok(Array.isArray(input.rows) && input.rows.length > 0);
+const width = input.rows[0].length;
+assert.ok(width > 0);
+for (const row of input.rows) {
+  assert.equal(typeof row, "string");
+  assert.equal(row.length, width);
+  assert.match(row, /^[.#]+$/u);
 }
-const accountIds = new Set();
-for (const account of input.accounts) {
-  assert.ok(account && typeof account === "object" && !Array.isArray(account));
-  assert.deepEqual(Object.keys(account).sort(), ["id", "roles"]);
-  assert.ok(typeof account.id === "string" && account.id.length > 0);
-  assert.equal(accountIds.has(account.id), false);
-  assert.ok(Array.isArray(account.roles));
-  assert.equal(new Set(account.roles).size, account.roles.length);
-  assert.ok(account.roles.every(roleId => typeof roleId === "string" && roles.has(roleId)));
-  accountIds.add(account.id);
-}
-const accounts = [...input.accounts]
-  .sort((left, right) => left.id.localeCompare(right.id, "en"))
-  .map(account => {
-    const allowed = new Set();
-    const denied = new Set();
-    for (const roleId of account.roles) {
-      for (const permission of roles.get(roleId).allow) allowed.add(permission);
-      for (const permission of roles.get(roleId).deny) denied.add(permission);
+const height = input.rows.length;
+const directions = [[-1, 0], [0, -1], [0, 1], [1, 0]];
+const seen = new Set();
+const keyFor = (row, column) => row + "," + column;
+const regions = [];
+for (let row = 0; row < height; row += 1) {
+  for (let column = 0; column < width; column += 1) {
+    const startKey = keyFor(row, column);
+    if (input.rows[row][column] !== "#" || seen.has(startKey)) continue;
+    const queue = [[row, column]];
+    seen.add(startKey);
+    let cursor = 0;
+    let cells = 0;
+    let perimeter = 0;
+    const bounds = { top: row, left: column, bottom: row, right: column };
+    while (cursor < queue.length) {
+      const [currentRow, currentColumn] = queue[cursor];
+      cursor += 1;
+      cells += 1;
+      bounds.top = Math.min(bounds.top, currentRow);
+      bounds.left = Math.min(bounds.left, currentColumn);
+      bounds.bottom = Math.max(bounds.bottom, currentRow);
+      bounds.right = Math.max(bounds.right, currentColumn);
+      for (const [rowDelta, columnDelta] of directions) {
+        const nextRow = currentRow + rowDelta;
+        const nextColumn = currentColumn + columnDelta;
+        if (nextRow < 0 || nextRow >= height || nextColumn < 0 || nextColumn >= width || input.rows[nextRow][nextColumn] === ".") {
+          perimeter += 1;
+          continue;
+        }
+        const nextKey = keyFor(nextRow, nextColumn);
+        if (!seen.has(nextKey)) {
+          seen.add(nextKey);
+          queue.push([nextRow, nextColumn]);
+        }
+      }
     }
-    const effective = [...allowed].filter(permission => !denied.has(permission)).sort((left, right) => left.localeCompare(right, "en"));
-    return { id: account.id, effective, denied: [...denied].sort((left, right) => left.localeCompare(right, "en")) };
-  });
-const permissionUsage = [...permissionUniverse]
-  .sort((left, right) => left.localeCompare(right, "en"))
-  .map(permission => ({ permission, accountCount: accounts.filter(account => account.effective.includes(permission)).length }));
-const withAccess = accounts.filter(account => account.effective.length > 0).length;
-const counts = { accountCount: accounts.length, withAccess, withoutAccess: accounts.length - withAccess };
-const expected = { accounts, permissionUsage, counts };
+    regions.push({ anchor: { row, column }, bounds, cells, perimeter });
+  }
+}
+regions.sort((left, right) => right.cells - left.cells || left.anchor.row - right.anchor.row || left.anchor.column - right.anchor.column);
+const expected = {
+  dimensions: { height, width },
+  regions,
+  totals: {
+    regions: regions.length,
+    filledCells: regions.reduce((sum, region) => sum + region.cells, 0),
+    perimeter: regions.reduce((sum, region) => sum + region.perimeter, 0),
+  },
+};
 assert.deepEqual(actual, expected);
-console.log("access matrix fixture passed");
+console.log("pixel map fixture passed");
 `;
 
 const PLAN_INPUT = [
@@ -415,45 +385,45 @@ const FIXTURES = {
     goalPolicy: { requiredPaths: ["inventory.json", "inventory-report.json"], format: "json" },
     expectedOutput: INVENTORY_EXPECTED,
   },
-  "execute-module-alias-heldout": {
-    name: "execute-module-alias-heldout",
-    description: "Post-C16 held-out guarded execution resolves exact and longest-prefix module aliases with complete usage accounting.",
+  "execute-fresh-021a-heldout": {
+    name: "execute-fresh-021a-heldout",
+    description: "Fresh C21 held-out guarded execution multiplies integer polynomials, differentiates the product, and evaluates fixed points.",
     kind: "execute",
     heldOut: true,
     files: {
-      "module-aliases.json": jsonFile(MODULE_ALIAS_INPUT),
-      "evaluator.mjs": MODULE_ALIAS_EVALUATOR,
+      "polynomial-job.json": jsonFile(POLYNOMIAL_INPUT),
+      "evaluator.mjs": POLYNOMIAL_EVALUATOR,
     },
-    outputPaths: ["resolved-imports.json"],
-    allowedReadPaths: ["module-aliases.json", "evaluator.mjs"],
+    outputPaths: ["polynomial-result.json"],
+    allowedReadPaths: ["polynomial-job.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read module-aliases.json and, only after exact goal confirmation, full reviewed planning, and approval, create resolved-imports.json as strict JSON. The immutable input is an object with exactly aliases and imports. Each aliases entry has exactly unique nonempty key and nonempty target strings. A key ending in / is a prefix rule: it matches only at the start of a specifier, its target also ends in /, and the suffix after the key is appended verbatim to the target. Every other key is exact-only and uses its target verbatim. When multiple rules match, select the rule with the greatest key length. Do not case-fold, decode, path-normalize, or treat a lookalike substring as a match. Each imports entry has exactly a unique nonempty id and a nonempty specifier. The result has exactly resolutions, aliasUsage, and counts. resolutions has one entry per import, sorted ascending by id, with exactly id, specifier, status, alias, and target. A selected rule produces status mapped plus its key and resolved target; no selected rule produces status unmapped with null alias and target. aliasUsage contains every input alias, including unused aliases, sorted ascending by key, with exactly key and count; count is the number of imports selecting that alias. counts has exactly mapped and unmapped and counts all imports. All string comparisons are exact and case-sensitive. No material policy choice is implicit. The objective local acceptance command is exactly `node evaluator.mjs`. module-aliases.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing resolved-imports.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read polynomial-job.json and, only after exact goal confirmation, full reviewed planning, and approval, create polynomial-result.json as strict JSON. The immutable input is an object with exactly left, right, and points. left and right are nonempty arrays of safe integer coefficients in ascending power order, each ending in a nonzero coefficient. points is a nonempty duplicate-free array of safe integers, and all specified calculations remain safe integers. Multiply left and right by discrete convolution: the product coefficient at power k is the sum of left[i] times right[k - i] over valid indices. Preserve every coefficient position, including zeros, so product has left.length + right.length - 1 entries. derivative contains the product's derivative coefficients in ascending power order: entry p is (p + 1) times product[p + 1], again preserving zeros. Evaluate the product at every input point and put entries with exactly x and value in evaluations sorted by ascending x. The result has exactly product, derivative, evaluations, and degree, where degree is product.length - 1. The objective local acceptance command is exactly `node evaluator.mjs`. polynomial-job.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of polynomial-result.json, and at most that exact evaluator command. No installs, other commands, network, publishing, credentials, deletion, or system mutation.",
     answers: [
-      "All material decisions are fixed: non-slash aliases match only an identical specifier; slash aliases require a start-of-string match and append the untouched suffix; the longest matching key wins; unmatched nulls and zero-use aliases remain present; all declared ordering and exact fields are required; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
-      "There are no additional user choices. Keep module-aliases.json and evaluator.mjs immutable and resolved-imports.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
+      "All material decisions are fixed: coefficient arrays use ascending powers; multiplication uses exact discrete convolution; zero coefficients remain in position; differentiation multiplies product[p + 1] by p + 1; evaluations use the product and sort by numeric x; every declared field is exact; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep polynomial-job.json and evaluator.mjs immutable and polynomial-result.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
     ],
-    goalPolicy: { requiredPaths: ["module-aliases.json", "resolved-imports.json"], format: "json" },
-    expectedOutput: MODULE_ALIAS_EXPECTED,
+    goalPolicy: { requiredPaths: ["polynomial-job.json", "polynomial-result.json"], format: "json" },
+    expectedOutput: POLYNOMIAL_EXPECTED,
   },
-  "execute-access-matrix-heldout": {
-    name: "execute-access-matrix-heldout",
-    description: "Post-C16 held-out guarded execution derives deny-precedence account access and permission usage from direct role assignments.",
+  "execute-fresh-021b-heldout": {
+    name: "execute-fresh-021b-heldout",
+    description: "Fresh C21 held-out guarded execution measures four-neighbor filled regions, inclusive bounds, and exposed perimeter.",
     kind: "execute",
     heldOut: true,
     files: {
-      "role-assignments.json": jsonFile(ACCESS_MATRIX_INPUT),
-      "evaluator.mjs": ACCESS_MATRIX_EVALUATOR,
+      "pixel-map.json": jsonFile(PIXEL_MAP_INPUT),
+      "evaluator.mjs": PIXEL_MAP_EVALUATOR,
     },
-    outputPaths: ["access-matrix.json"],
-    allowedReadPaths: ["role-assignments.json", "evaluator.mjs"],
+    outputPaths: ["region-report.json"],
+    allowedReadPaths: ["pixel-map.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read role-assignments.json and, only after exact goal confirmation, full reviewed planning, and approval, create access-matrix.json as strict JSON. The immutable input is an object with exactly roles and accounts. Each role has exactly a unique nonempty id plus duplicate-free allow and deny arrays of nonempty permission strings. Each account has exactly a unique nonempty id and a duplicate-free roles array containing only declared role ids. For each account, union the allow permissions and separately union the deny permissions of its directly assigned roles. denied contains the complete deny union even when a denied permission was never allowed. effective contains the allow union minus the deny union, so any deny wins across all assigned roles. Do not infer role inheritance or permissions not present in the input. The result has exactly accounts, permissionUsage, and counts. accounts has one entry per input account, sorted ascending by id, with exactly id, effective, and denied; both permission arrays are deduplicated and sorted ascending. permissionUsage contains every distinct permission mentioned in any role allow or deny array, including permissions effective for zero accounts, sorted ascending by permission, with exactly permission and accountCount; each account contributes at most once to a permission count. counts has exactly accountCount, withAccess, and withoutAccess, where access means a nonempty effective array. Permission and id comparisons are exact and case-sensitive. No material policy choice is implicit. The objective local acceptance command is exactly `node evaluator.mjs`. role-assignments.json and evaluator.mjs are immutable. Authority may cover only reading those files, writing/editing access-matrix.json, and at most that exact evaluator command. No generated code, extra files, installs, other commands, web or network access, publishing, credentials, deletion, system mutation, or human/rubric acceptance.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read pixel-map.json and, only after exact goal confirmation, full reviewed planning, and approval, create region-report.json as strict JSON. The immutable input is an object with exactly rows: a nonempty array of equal-length nonempty strings containing only . and #. A # cell belongs to the same region as another # cell only through shared horizontal or vertical sides; diagonal contact does not connect regions. Coordinates are zero-based. For each region, cells is its filled-cell count; perimeter is the number of cell sides whose neighbor is outside the grid or a . cell; anchor is its topmost filled row and then the leftmost filled column on that row; and bounds has inclusive top, left, bottom, and right coordinates. Do not fill holes. The result has exactly dimensions, regions, and totals. dimensions has exactly height and width. regions has one entry per region with exactly anchor, bounds, cells, and perimeter, sorted by descending cells and then ascending anchor row and anchor column. anchor has exactly row and column. totals has exactly regions, filledCells, and perimeter, summing across all regions. The objective local acceptance command is exactly `node evaluator.mjs`. pixel-map.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of region-report.json, and at most that exact evaluator command. No installs, other commands, network, publishing, credentials, deletion, or system mutation.",
     answers: [
-      "All material decisions are fixed: only directly assigned roles participate; unions deduplicate permissions; deny always overrides allow; denied retains permissions that were not allowed; the usage universe includes zero-effective permissions and counts accounts rather than role occurrences; all declared ordering and fields are exact; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
-      "There are no additional user choices. Keep role-assignments.json and evaluator.mjs immutable and access-matrix.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
+      "All material decisions are fixed: only horizontal and vertical sides connect cells; diagonal contact stays separate; coordinates are zero-based; bounds are inclusive; grid edges and holes contribute exposed perimeter; region ordering and every exact field are required; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep pixel-map.json and evaluator.mjs immutable and region-report.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
     ],
-    goalPolicy: { requiredPaths: ["role-assignments.json", "access-matrix.json"], format: "json" },
-    expectedOutput: ACCESS_MATRIX_EXPECTED,
+    goalPolicy: { requiredPaths: ["pixel-map.json", "region-report.json"], format: "json" },
+    expectedOutput: PIXEL_MAP_EXPECTED,
   },
 };
 

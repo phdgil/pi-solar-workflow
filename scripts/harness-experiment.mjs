@@ -684,7 +684,7 @@ export async function runFixtureFlow(fixture, client, runtime, workspace, deadli
   }
 
   if (fixture.kind !== "execute") throw new Error(`Unsupported fixture kind: ${fixture.kind}`);
-  if (!new Set(["execute-summary", "execute-inventory-heldout", "execute-module-alias-heldout", "execute-access-matrix-heldout"]).has(fixture.name)) throw new Error("Programmatic confirmation is forbidden outside the explicit synthetic execute allowlist.");
+  if (!new Set(["execute-summary", "execute-inventory-heldout", "execute-fresh-021a-heldout", "execute-fresh-021b-heldout"]).has(fixture.name)) throw new Error("Programmatic confirmation is forbidden outside the explicit synthetic execute allowlist.");
   let interview = readyInterview(current.entries);
   for (const answer of fixture.answers) {
     if (interview) break;

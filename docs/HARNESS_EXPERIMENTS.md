@@ -286,3 +286,26 @@ C19는 `d9d3965dd01d184ad6335d33a376eb8482584213`의 26개 파일과 일치하�
 Executor 절차 두 곳만 명확히 했다. File-tool 경로는 선언한 workspace-relative/forward-slash 문자열 그대로 사용하며 absolute/drive/ADS 표기를 사용하지 않는다. Output 또는 command의 paths 목록은 별도 read 권한이 아니므로 결과 검사는 현재 step의 정확한 read/command capability 안에서만 수행한다. Guard, 승인, checkpoint, 예산, 다른 역할과 fixture·요청·grader는 그대로다.
 
 322/322 검사와 installed-Pi loopback을 통과했고, 동결 C19 대비 바뀐 product 파일이 executor skill 하나이며 protocol이 같음을 확인했다. 문구가 실제 모델 준수를 개선한다는 증거는 아직 아니다. 개발용 inventory의 C19/C20 세 쌍 교대 순서와 **기존 17개 assertion의 종합 통과**를 주 지표로 사전등록했으며, 승인 관측·native coverage·거절·완료·시간은 구분한다. 실측 중 tuning이나 과거 성공 이월은 하지 않으며 최종 tuning 뒤 새 heldout이 필요하다.
+
+C20 source `50f6deab52365c63e2b1edde9b62456b755c1acb9372d2167e0e3b2d9ba74623`은 commit `bf956ced0c3c296c753e88cee67463582110a604`과 일치하게 동결했다. C19와 protocol·요청·fixture가 같은 여섯 실측 결과를 모두 보존했다.
+
+| 쌍/군 | 종합 | 승인 관측 | 독립 완료 검사 | native 거절/무효화 | elapsed ms |
+|---|---|---|---|---|---:|
+| 1 / C19 | 실패 11/17 | 예 | 실패 | 2/0 | 676770 |
+| 1 / C20 | 실패 11/17 | 아니오 | 실패 | 0/0 | 1027686 |
+| 2 / C19 | 실패 11/17 | 아니오 | 실패 | 0/0 | 1200138 |
+| 2 / C20 | 실패 15/17 | 예 | 통과 | 1/0 | 778558 |
+| 3 / C19 | 실패 11/17 | 아니오 | 실패 | 0/0 | 456883 |
+| 3 / C20 | 실패 11/17 | 아니오 | 실패 | 0/0 | 679657 |
+
+여섯 건 모두 goal predicate 수락과 complete native coverage를 기록했지만, **종합 통과는 양쪽 모두 0/3**이다. 승인 관측은 각 1/3이며, 실행 전 멈춘 run의 거절 0건을 executor 준수 증거로 삼지 않는다. C20 한 건의 독립 완료 통과도 role interruption과 실제 native 거절 한 건 때문에 전체 성공은 아니다. C19 두 번째는 전체 runner 제한에 도달했다. 작은 비통제 표본에서 실행 완료 0/3 대 1/3을 우월성이나 수렴으로 해석하지 않는다. 동결 파일·최종 결과 식별·17개 검사 수를 재확인했으며 중간 tuning은 없었다.
+
+독립 감사는 C20의 거절 한 건이 명시적 상대 경로 대신 absolute/drive-qualified 경로로 출력 write를 시도한 것임을 확인했다. 실제 native receipt가 거절을 기록했고, 뒤이은 상대 경로 write와 승인된 evaluator 명령은 execution-allowed/current로 처리됐다. 새로운 standalone-read 설명과는 다른 위반이며, 올바른 차단·복구가 관측됐을 뿐 문구 준수나 주입 실패의 원인을 확정하지 않는다. 이 기록에서 추가 runtime 결함은 입증되지 않았다.
+
+같은 동결 C20의 별도 개발 breadth 결과는 research **12/12 · 17359 ms**, interview **12/13 · 100768 ms**, planning **9/13 · 613472 ms**, summary **12/17 · 1200197 ms**다. 모두 complete native coverage와 거절·무효화 0건이지만 research만 종합 통과했다. Interview는 fixture가 금지한 workspace-root read 시도로 fixture 정책 검사를 실패했다. Native 권한 범위와 fixture 과제 범위는 같지 않으며, 한 검사의 통과로 다른 실패를 지우지 않는다. Planning은 role interruption, summary는 runner/controller 오류로 끝났다. 이 개발 진단도 새 heldout 검증을 대신하지 않는다.
+
+### C21: 동일 product와 새 독립 검증 protocol
+
+C20 product tuning 종료 후 두 새 opaque heldout을 별도 작성하고, 다른 reviewer가 기대 결과와 evaluator·edge handling을 독립적으로 검토했다. 제한된 정적 판정은 CLEAR이며 실측 성공 증거가 아니다. Reviewer의 generic-symbol 탐색에서 일부 폐기된 사례 경계 문맥이 보였으므로 완벽한 설계 독립성은 주장하지 않는다. 부모는 새 payload·정답·알고리즘을 열람하지 않고 metadata/hash 및 개발 사례만 비교했다.
+
+Product와 다섯 개발 fixture, generic 요청·승인·grader는 그대로이며 driver 변경도 opaque 사례명 교체뿐임을 확인했다. 새 protocol은 `dfc6b0a4d471ca7db4b113979154ae39e7687038c900b6592c0cbfa0dc221f27`이다. 322/322 검사, installed-Pi의 기존 17개 assertion 및 native 거절/일반 오류 시나리오, 37개 package 파일과 private-tree 제외, whitespace 검사를 통과했다. 전체 로그는 보존하고 부모에게 payload가 노출되지 않도록 aggregate gate 결과만 표시했다. 이전 성공 횟수는 이월하지 않으며 일곱 사례·세 회차의 무수정 검증 기준을 유지한다.

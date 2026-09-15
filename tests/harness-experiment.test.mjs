@@ -29,8 +29,8 @@ import {
 import { NATIVE_TOOL_AUTHORITY_ENTRY } from "../runtime/loop.ts";
 
 const FRESH_HELD_OUT_CASES = [
-  "execute-module-alias-heldout",
-  "execute-access-matrix-heldout",
+  "execute-fresh-021a-heldout",
+  "execute-fresh-021b-heldout",
 ];
 
 function cleanFixturePolicyAudit(approvalEventIndex = null) {
@@ -456,7 +456,7 @@ function completedExecuteObservation(caseName, output) {
   return observation;
 }
 
-test("fixture catalog contains five development cases and two post-C16 fresh held-out cases", () => {
+test("fixture catalog contains five development cases and two C21 fresh held-out cases", () => {
   const listed = listHarnessFixtures();
   assert.deepEqual(listed.map(item => item.name), [
     "research-local",
@@ -1372,58 +1372,60 @@ test("fresh held-out evaluator and independent grading oracles reject materially
     assert.equal(gradeHarnessResult(caseName, completedExecuteObservation(caseName, expected)).passed, true);
 
     const alteredOutputs = [];
-    if (caseName === "execute-module-alias-heldout") {
-      assert.deepEqual(new Set(expected.resolutions.map(item => item.status)), new Set(["mapped", "unmapped"]));
-      assert.ok(expected.aliasUsage.some(item => item.count === 0));
-      assert.ok(expected.resolutions.some(item => item.status === "unmapped" && item.alias === null && item.target === null));
+    if (caseName === "execute-fresh-021a-heldout") {
+      assert.equal(expected.product[2], 0);
+      assert.equal(expected.derivative[1], 0);
+      assert.equal(expected.evaluations.find(item => item.x === -1).value, 0);
+      assert.deepEqual(expected.evaluations.map(item => item.x), [-1, 0, 2]);
 
-      const longestPrefixWasLost = structuredClone(expected);
-      const nestedImport = longestPrefixWasLost.resolutions.find(item => item.id === "widget");
-      nestedImport.alias = "@core/";
-      nestedImport.target = "./src/core/ui/button.mjs";
-      longestPrefixWasLost.aliasUsage.find(item => item.key === "@core/").count += 1;
-      longestPrefixWasLost.aliasUsage.find(item => item.key === "@core/ui/").count -= 1;
-      alteredOutputs.push(longestPrefixWasLost);
+      const cancellationWasLost = structuredClone(expected);
+      cancellationWasLost.product[2] = 1;
+      cancellationWasLost.derivative[1] = 2;
+      cancellationWasLost.evaluations.find(item => item.x === -1).value = 1;
+      cancellationWasLost.evaluations.find(item => item.x === 2).value = 148;
+      alteredOutputs.push(cancellationWasLost);
 
-      const exactAliasBecamePrefix = structuredClone(expected);
-      const exactSubpath = exactAliasBecamePrefix.resolutions.find(item => item.id === "legacy-subpath");
-      exactSubpath.status = "mapped";
-      exactSubpath.alias = "legacy-api";
-      exactSubpath.target = "./compat/api.mjs/v2";
-      exactAliasBecamePrefix.aliasUsage.find(item => item.key === "legacy-api").count += 1;
-      exactAliasBecamePrefix.counts.mapped += 1;
-      exactAliasBecamePrefix.counts.unmapped -= 1;
-      alteredOutputs.push(exactAliasBecamePrefix);
+      const derivativePowerWasNotApplied = structuredClone(expected);
+      derivativePowerWasNotApplied.derivative[2] = -7;
+      alteredOutputs.push(derivativePowerWasNotApplied);
 
-      const unusedAliasWasDropped = structuredClone(expected);
-      unusedAliasWasDropped.aliasUsage = unusedAliasWasDropped.aliasUsage.filter(item => item.count !== 0);
-      alteredOutputs.push(unusedAliasWasDropped);
+      const zeroEvaluationWasDropped = structuredClone(expected);
+      zeroEvaluationWasDropped.evaluations = zeroEvaluationWasDropped.evaluations.filter(item => item.value !== 0);
+      alteredOutputs.push(zeroEvaluationWasDropped);
 
-      const resolutionSortWasLost = structuredClone(expected);
-      resolutionSortWasLost.resolutions.reverse();
-      alteredOutputs.push(resolutionSortWasLost);
+      const evaluationSortWasLost = structuredClone(expected);
+      evaluationSortWasLost.evaluations.reverse();
+      alteredOutputs.push(evaluationSortWasLost);
     } else {
-      assert.equal(caseName, "execute-access-matrix-heldout");
-      assert.ok(expected.accounts.some(account => account.effective.length === 0));
-      assert.ok(expected.permissionUsage.some(item => item.accountCount === 0));
-      assert.ok(expected.accounts.some(account => account.denied.some(permission => !account.effective.includes(permission))));
+      assert.equal(caseName, "execute-fresh-021b-heldout");
+      assert.ok(expected.regions.some(region => region.cells === 8 && region.perimeter === 16));
+      assert.equal(expected.regions.filter(region => region.cells === 1).length, 2);
+      assert.deepEqual(expected.regions.filter(region => region.cells === 1).map(region => region.anchor), [
+        { row: 0, column: 0 },
+        { row: 1, column: 1 },
+      ]);
+      assert.equal(expected.totals.perimeter, 50);
 
-      const denyPrecedenceWasLost = structuredClone(expected);
-      denyPrecedenceWasLost.accounts.find(account => account.id === "bea").effective.unshift("build:run");
-      denyPrecedenceWasLost.permissionUsage.find(item => item.permission === "build:run").accountCount += 1;
-      alteredOutputs.push(denyPrecedenceWasLost);
+      const holeWasFilled = structuredClone(expected);
+      holeWasFilled.regions.find(region => region.anchor.row === 0 && region.anchor.column === 4).perimeter -= 4;
+      holeWasFilled.totals.perimeter -= 4;
+      alteredOutputs.push(holeWasFilled);
 
-      const unappliedDenyWasDropped = structuredClone(expected);
-      unappliedDenyWasDropped.accounts.find(account => account.id === "cy").denied = [];
-      alteredOutputs.push(unappliedDenyWasDropped);
+      const diagonalsWereConnected = structuredClone(expected);
+      diagonalsWereConnected.regions = [
+        ...diagonalsWereConnected.regions.slice(0, 4),
+        { anchor: { row: 0, column: 0 }, bounds: { top: 0, left: 0, bottom: 1, right: 1 }, cells: 2, perimeter: 8 },
+      ];
+      diagonalsWereConnected.totals.regions -= 1;
+      alteredOutputs.push(diagonalsWereConnected);
 
-      const zeroUsagePermissionWasDropped = structuredClone(expected);
-      zeroUsagePermissionWasDropped.permissionUsage = zeroUsagePermissionWasDropped.permissionUsage.filter(item => item.accountCount !== 0);
-      alteredOutputs.push(zeroUsagePermissionWasDropped);
+      const regionSortWasLost = structuredClone(expected);
+      regionSortWasLost.regions.reverse();
+      alteredOutputs.push(regionSortWasLost);
 
-      const accountSortWasLost = structuredClone(expected);
-      accountSortWasLost.accounts.reverse();
-      alteredOutputs.push(accountSortWasLost);
+      const exclusiveBounds = structuredClone(expected);
+      exclusiveBounds.regions[0].bounds.bottom += 1;
+      alteredOutputs.push(exclusiveBounds);
     }
 
     assert.equal(alteredOutputs.length, 4);
