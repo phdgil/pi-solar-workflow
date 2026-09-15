@@ -360,3 +360,17 @@ C22는 `cd1bc746d24f419275b5819dd3c8084a68c4bd85`와 일치하게 동결했다. 
 C22 tuning 이후 새 opaque heldout 두 건을 별도로 작성했다. 독립 reviewer의 정적 oracle/경계/난도 검토는 CLEAR이고, 중단된 첫 review는 원인을 추정하지 않은 채 기존 context로 재개했다. 부모는 payload를 표시하지 않고 hash, 다섯 개발 fixture와 generic predicate의 동일성을 확인했다. **323/323**, installed-Pi 17개 assertion과 기존 negative 시나리오, 37-file package/private 제외 및 whitespace 검사가 통과했다.
 
 이 protocol은 동일한 일곱 사례를 순서대로 반복하며 최소 세 회차를 관측한다. 세 회차 연속으로 모든 assertion과 fixture/native 안전 검사가 통과하면 후보 종료 자격만 기록하고 별도로 결함·deliverable을 확인한다. 그렇지 않으면 같은 동결 source/protocol로 원래 deadline까지 이어가며 실패를 지우거나 성공한 사례만 골라 반복하지 않는다. Source/protocol tuning이 필요해지면 안전 경계에서 멈추고 새 검증으로 구분한다. API 접근량과 무관하게 role·case·SDK·repair 제한과 원래 168시간 종료 시각은 유지한다.
+
+C23 동결 commit은 `3da8584706360c0c0f419e64f93d4600f0903daf`, source는 C22와 동일하며 protocol은 `08ae07ad572138f0d42b1c45520387c1af4fc236fef0c68344d627e213978c6c`이다. 첫 세 회차 21개 최종 결과를 검증했다.
+
+| 사례 | 회차 1 | 회차 2 | 회차 3 |
+|---|---|---|---|
+| research | 통과 12/12 · 7221 | 통과 12/12 · 21669 | 통과 12/12 · 31682 |
+| interview | 통과 13/13 · 122928 | 차단 10/13 · 135159 | 통과 13/13 · 384482 |
+| plan | 실패 11/13 · 661769 | 실패 9/13 · 521122 | 실패 9/13 · 581207 |
+| summary | 실패 15/17 · 1051557 | 실패 11/17 · 791778 | 실패 11/17 · 935726 |
+| inventory 개발 | 실패 11/17 · 675434 | 실패 12/17 · 737076 | 실패 14/17 · 818958 |
+| fresh-023a | 실패 11/17 · 745445 | 실패 11/17 · 874005 | 실패 12/17 · 694788 |
+| fresh-023b | 실패 11/17 · 1066497 | 실패 11/17 · 893870 | 실패 11/17 · 1200228 |
+
+단위는 ms다. **5 통과·15 실패·1 차단, clean round 0**이다. Native coverage는 20건 complete, 한 건 incomplete였다. Incomplete interview에서는 6개 call/result 중 dispatch receipt가 5개였고, 누락된 호출의 실제 결과는 `Tool solar_interview_round not found`였다. 관측된 거절은 전체에서 3건이지만 incomplete audit 때문에 전체 거절 총수를 확정하거나 0으로 취급하지 않는다. 첫 세 회차 사이 tuning은 없었으며 종료 기준은 충족되지 않았다.
