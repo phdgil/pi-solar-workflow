@@ -337,3 +337,26 @@ C21 개발 revision의 resolution explanation이 한 글자였고, native schema
 Interview는 validator를 바꾸지 않았다. 이미 허용되는 별개의 material-gap/contradiction ID를 함께 저장·복구할 수 있고, gap coverage 누락과 unresolved 상태의 ready 선언은 계속 거절됨을 검증했다. 이에 맞춰 기존 ledger gap을 readiness에 포함하면서 typed contradiction도 남기라는 preflight 설명만 추가했다. 실제 모델의 repair 중 분류 손실이 줄어드는지는 별도 개발 가설이다.
 
 부모 검증은 **323/323**, installed-Pi의 기존 17개 assertion과 거절/일반 오류 시나리오, 37-file package/private 제외 및 whitespace 통과다. C21 결과는 유지하며 새 source/protocol의 성공 횟수는 다시 시작한다. 두 개발 과제의 세 쌍 비교는 종합 13/13을 주 지표로 사전등록했고, schema 진단이나 중간 상태만으로 성공을 대신하지 않는다.
+
+C22는 `cd1bc746d24f419275b5819dd3c8084a68c4bd85`와 일치하게 동결했다. Source는 `211a8f0a6225117001c9dc9e6036957171665252e7fc0d2968f3eef5320b382a`, protocol은 `462f4cb8aab8885e1f3fc30e4c8e01dcbe9053dafdb67805fc24870705f7fdd3`이다. Trusted schema 소스가 protocol hash에 포함되므로 두 군의 hash는 다르지만 driver·fixture·grader predicate는 byte-identical이다.
+
+| 과제/쌍 | C21 | C22 |
+|---|---|---|
+| interview / 1 | 통과 13/13 · 391907 | 실패 12/13 · 219609 |
+| interview / 2 | 실패 12/13 · 324395 | 실패 12/13 · 144328 |
+| interview / 3 | 통과 13/13 · 182309 | 실패 12/13 · 311096 |
+| plan / 1 | 실패 12/13 · 999647 | 실패 11/13 · 786982 |
+| plan / 2 | 실패 10/13 · 983682 | 실패 9/13 · 700060 |
+| plan / 3 | 실패 10/13 · 1200189 | 실패 10/13 · 1200095 |
+
+단위는 ms다. Interview의 typed contradiction 저장은 양쪽 3/3이지만 종합 통과는 **2/3 대 0/3**이다. 네 interview 실패는 모두 fixture 정책 위반이었다. Planning 종합 통과는 양쪽 **0/3**이며 마지막 쌍은 전체 runner 제한에 도달했다. 12건 모두 complete native coverage 및 거절·무효화 0건이지만 해당 범위 밖 실패는 그대로 남는다. Native 문자열 결함 보정은 검증됐어도 timeout 해결·전체 품질 개선·clarification의 인과적 효과는 입증되지 않았다. 중간 tuning은 없었고 모든 실패를 유지했다.
+
+별도 C22 breadth에서는 research **12/12 · 7993 ms** 통과, inventory **11/17 · 959068 ms** 실패, summary **15/17 · 988684 ms** 실패였다. Summary는 독립 완료 검사까지 통과했지만 role interruption과 현재 step에 선언되지 않은 `read(summary.json)`의 실제 native 거절 한 건이 남았다.
+
+실행 인자 선택을 돕는 enum-only 제안도 별도 isolated Pi/Solar Max probe로 확인했다. 절대 경로를 명시적으로 요구한 동일 조건에서 기본 schema와 상대 경로 enum을 추가한 variant 모두 절대 경로를 호출했고, 같은 진단 guard가 둘 다 거절했다. 한 adversarial 조건의 관측이며 일반적인 무효성을 증명하지 않지만, 개선 근거도 없으므로 production projection은 추가하지 않았다. Global Pi settings는 바뀌지 않았다. 첫 inline supervisor의 shell-quoting 구문 실패는 Pi 호출 전 발생한 setup 실패로 별도 보존했다.
+
+### C23: 수정 없는 연속 검증
+
+C22 tuning 이후 새 opaque heldout 두 건을 별도로 작성했다. 독립 reviewer의 정적 oracle/경계/난도 검토는 CLEAR이고, 중단된 첫 review는 원인을 추정하지 않은 채 기존 context로 재개했다. 부모는 payload를 표시하지 않고 hash, 다섯 개발 fixture와 generic predicate의 동일성을 확인했다. **323/323**, installed-Pi 17개 assertion과 기존 negative 시나리오, 37-file package/private 제외 및 whitespace 검사가 통과했다.
+
+이 protocol은 동일한 일곱 사례를 순서대로 반복하며 최소 세 회차를 관측한다. 세 회차 연속으로 모든 assertion과 fixture/native 안전 검사가 통과하면 후보 종료 자격만 기록하고 별도로 결함·deliverable을 확인한다. 그렇지 않으면 같은 동결 source/protocol로 원래 deadline까지 이어가며 실패를 지우거나 성공한 사례만 골라 반복하지 않는다. Source/protocol tuning이 필요해지면 안전 경계에서 멈추고 새 검증으로 구분한다. API 접근량과 무관하게 role·case·SDK·repair 제한과 원래 168시간 종료 시각은 유지한다.

@@ -29,8 +29,8 @@ import {
 import { NATIVE_TOOL_AUTHORITY_ENTRY } from "../runtime/loop.ts";
 
 const FRESH_HELD_OUT_CASES = [
-  "execute-fresh-021a-heldout",
-  "execute-fresh-021b-heldout",
+  "execute-fresh-023a-heldout",
+  "execute-fresh-023b-heldout",
 ];
 
 function cleanFixturePolicyAudit(approvalEventIndex = null) {
@@ -456,7 +456,7 @@ function completedExecuteObservation(caseName, output) {
   return observation;
 }
 
-test("fixture catalog contains five development cases and two C21 fresh held-out cases", () => {
+test("fixture catalog contains five development cases and two C23 fresh held-out cases", () => {
   const listed = listHarnessFixtures();
   assert.deepEqual(listed.map(item => item.name), [
     "research-local",
@@ -1364,7 +1364,7 @@ test("human or rubric completion is not command-only completion", () => {
   assert.ok(completion.evidence.contractViolations.some(violation => /non_command_gate|human_acceptance_forbidden/u.test(violation)));
 });
 
-test("fresh held-out evaluator and independent grading oracles reject materially wrong branch, ordering, and edge-value outputs", () => {
+test("fresh held-out evaluator and independent grading oracles reject materially wrong optimization, geometry, ordering, and edge-value outputs", () => {
   for (const caseName of FRESH_HELD_OUT_CASES) {
     const expected = expectedFixtureOutput(caseName);
     const evaluatorPass = evaluateFixtureOutput(caseName, expected);
@@ -1372,63 +1372,77 @@ test("fresh held-out evaluator and independent grading oracles reject materially
     assert.equal(gradeHarnessResult(caseName, completedExecuteObservation(caseName, expected)).passed, true);
 
     const alteredOutputs = [];
-    if (caseName === "execute-fresh-021a-heldout") {
-      assert.equal(expected.product[2], 0);
-      assert.equal(expected.derivative[1], 0);
-      assert.equal(expected.evaluations.find(item => item.x === -1).value, 0);
-      assert.deepEqual(expected.evaluations.map(item => item.x), [-1, 0, 2]);
+    if (caseName === "execute-fresh-023a-heldout") {
+      const routeFor = node => expected.routes.find(route => route.node === node);
+      assert.deepEqual(expected.routes.map(route => route.node), ["A", "B", "C", "D", "E", "F", "G", "H"]);
+      assert.deepEqual(routeFor("B"), { node: "B", distance: 4, hops: 1, path: ["A", "B"] });
+      assert.deepEqual(routeFor("D"), { node: "D", distance: 4, hops: 2, path: ["A", "B", "D"] });
+      assert.deepEqual(routeFor("E").path, ["A", "B", "E"]);
+      assert.deepEqual(routeFor("F").path, ["A", "C", "F"]);
+      assert.deepEqual(expected.unreachable, ["G", "H"]);
+      assert.equal(routeFor("H").distance, null);
 
-      const cancellationWasLost = structuredClone(expected);
-      cancellationWasLost.product[2] = 1;
-      cancellationWasLost.derivative[1] = 2;
-      cancellationWasLost.evaluations.find(item => item.x === -1).value = 1;
-      cancellationWasLost.evaluations.find(item => item.x === 2).value = 148;
-      alteredOutputs.push(cancellationWasLost);
+      const zeroCostWasRoundedUp = structuredClone(expected);
+      zeroCostWasRoundedUp.routes.find(route => route.node === "D").distance = 5;
+      alteredOutputs.push(zeroCostWasRoundedUp);
 
-      const derivativePowerWasNotApplied = structuredClone(expected);
-      derivativePowerWasNotApplied.derivative[2] = -7;
-      alteredOutputs.push(derivativePowerWasNotApplied);
+      const fewestHopTieWasLost = structuredClone(expected);
+      Object.assign(fewestHopTieWasLost.routes.find(route => route.node === "B"), { hops: 2, path: ["A", "C", "B"] });
+      alteredOutputs.push(fewestHopTieWasLost);
 
-      const zeroEvaluationWasDropped = structuredClone(expected);
-      zeroEvaluationWasDropped.evaluations = zeroEvaluationWasDropped.evaluations.filter(item => item.value !== 0);
-      alteredOutputs.push(zeroEvaluationWasDropped);
+      const lexicalTieWasLost = structuredClone(expected);
+      lexicalTieWasLost.routes.find(route => route.node === "E").path = ["A", "C", "E"];
+      alteredOutputs.push(lexicalTieWasLost);
 
-      const evaluationSortWasLost = structuredClone(expected);
-      evaluationSortWasLost.evaluations.reverse();
-      alteredOutputs.push(evaluationSortWasLost);
+      const unreachableNodeWasDropped = structuredClone(expected);
+      unreachableNodeWasDropped.routes = unreachableNodeWasDropped.routes.filter(route => route.node !== "H");
+      unreachableNodeWasDropped.unreachable = unreachableNodeWasDropped.unreachable.filter(node => node !== "H");
+      alteredOutputs.push(unreachableNodeWasDropped);
+
+      const routeSortWasLost = structuredClone(expected);
+      routeSortWasLost.routes.reverse();
+      alteredOutputs.push(routeSortWasLost);
     } else {
-      assert.equal(caseName, "execute-fresh-021b-heldout");
-      assert.ok(expected.regions.some(region => region.cells === 8 && region.perimeter === 16));
-      assert.equal(expected.regions.filter(region => region.cells === 1).length, 2);
-      assert.deepEqual(expected.regions.filter(region => region.cells === 1).map(region => region.anchor), [
-        { row: 0, column: 0 },
-        { row: 1, column: 1 },
-      ]);
-      assert.equal(expected.totals.perimeter, 50);
+      assert.equal(caseName, "execute-fresh-023b-heldout");
+      assert.deepEqual(expected.hull[0], { x: -3, y: 0 });
+      assert.equal(expected.hull.some(point => point.x === 1 && point.y === -3), false);
+      assert.equal(expected.areaTwice, 114);
+      assert.deepEqual(expected.pointCounts, { input: 16, unique: 14, hullVertices: 7 });
+      assert.equal(expected.probes.find(probe => probe.id === "boundary-slant").position, "boundary");
+      assert.equal(expected.probes.find(probe => probe.id === "inside-near-edge").position, "inside");
+      assert.equal(expected.probes.find(probe => probe.id === "outside-right").position, "outside");
 
-      const holeWasFilled = structuredClone(expected);
-      holeWasFilled.regions.find(region => region.anchor.row === 0 && region.anchor.column === 4).perimeter -= 4;
-      holeWasFilled.totals.perimeter -= 4;
-      alteredOutputs.push(holeWasFilled);
+      const collinearPointWasRetained = structuredClone(expected);
+      collinearPointWasRetained.hull.splice(2, 0, { x: 1, y: -3 });
+      collinearPointWasRetained.pointCounts.hullVertices += 1;
+      alteredOutputs.push(collinearPointWasRetained);
 
-      const diagonalsWereConnected = structuredClone(expected);
-      diagonalsWereConnected.regions = [
-        ...diagonalsWereConnected.regions.slice(0, 4),
-        { anchor: { row: 0, column: 0 }, bounds: { top: 0, left: 0, bottom: 1, right: 1 }, cells: 2, perimeter: 8 },
-      ];
-      diagonalsWereConnected.totals.regions -= 1;
-      alteredOutputs.push(diagonalsWereConnected);
+      const orientationWasReversed = structuredClone(expected);
+      orientationWasReversed.hull = [orientationWasReversed.hull[0], ...orientationWasReversed.hull.slice(1).reverse()];
+      alteredOutputs.push(orientationWasReversed);
 
-      const regionSortWasLost = structuredClone(expected);
-      regionSortWasLost.regions.reverse();
-      alteredOutputs.push(regionSortWasLost);
+      const boundaryWasClassifiedInside = structuredClone(expected);
+      boundaryWasClassifiedInside.probes.find(probe => probe.id === "boundary-lower").position = "inside";
+      alteredOutputs.push(boundaryWasClassifiedInside);
 
-      const exclusiveBounds = structuredClone(expected);
-      exclusiveBounds.regions[0].bounds.bottom += 1;
-      alteredOutputs.push(exclusiveBounds);
+      const outsideWasClassifiedInside = structuredClone(expected);
+      outsideWasClassifiedInside.probes.find(probe => probe.id === "outside-right").position = "inside";
+      alteredOutputs.push(outsideWasClassifiedInside);
+
+      const areaWasNotDoubled = structuredClone(expected);
+      areaWasNotDoubled.areaTwice = 57;
+      alteredOutputs.push(areaWasNotDoubled);
+
+      const duplicatesWereNotRemoved = structuredClone(expected);
+      duplicatesWereNotRemoved.pointCounts.unique = duplicatesWereNotRemoved.pointCounts.input;
+      alteredOutputs.push(duplicatesWereNotRemoved);
+
+      const probeSortWasLost = structuredClone(expected);
+      probeSortWasLost.probes.reverse();
+      alteredOutputs.push(probeSortWasLost);
     }
 
-    assert.equal(alteredOutputs.length, 4);
+    assert.ok(alteredOutputs.length >= 5);
     for (const altered of alteredOutputs) {
       const evaluatorFailure = evaluateFixtureOutput(caseName, altered);
       assert.notEqual(evaluatorFailure.status, 0);

@@ -7,8 +7,8 @@ const CASE_ORDER = [
   "plan-software",
   "execute-summary",
   "execute-inventory-heldout",
-  "execute-fresh-021a-heldout",
-  "execute-fresh-021b-heldout",
+  "execute-fresh-023a-heldout",
+  "execute-fresh-023b-heldout",
 ];
 
 const SUMMARY_INPUT = [
@@ -27,22 +27,55 @@ const INVENTORY_INPUT = [
   { sku: "cd-2", location: "south", quantity: 1 },
 ];
 
-const POLYNOMIAL_INPUT = {
-  left: [2, -1, 0, 3],
-  right: [-2, 2, 1],
-  points: [2, -1, 0],
+const ROUTE_MAP_INPUT = {
+  start: "A",
+  nodes: ["F", "A", "H", "C", "G", "E", "B", "D"],
+  edges: [
+    { from: "A", to: "B", cost: 4 },
+    { from: "A", to: "C", cost: 1 },
+    { from: "C", to: "B", cost: 3 },
+    { from: "B", to: "D", cost: 0 },
+    { from: "C", to: "D", cost: 4 },
+    { from: "B", to: "E", cost: 2 },
+    { from: "C", to: "E", cost: 5 },
+    { from: "D", to: "E", cost: 2 },
+    { from: "A", to: "E", cost: 7 },
+    { from: "C", to: "F", cost: 5 },
+    { from: "D", to: "F", cost: 2 },
+    { from: "E", to: "F", cost: 0 },
+    { from: "F", to: "B", cost: 1 },
+    { from: "G", to: "H", cost: 2 },
+    { from: "H", to: "G", cost: 0 },
+  ],
 };
 
-const PIXEL_MAP_INPUT = {
-  rows: [
-    "#...###..",
-    ".#..#.#..",
-    "....###..",
-    ".........",
-    "##..#....",
-    "##..##...",
-    "....#..#.",
-    ".......##",
+const POINT_CLOUD_INPUT = {
+  points: [
+    { x: 0, y: 0 },
+    { x: 6, y: 0 },
+    { x: -3, y: 3 },
+    { x: 1, y: -3 },
+    { x: 4, y: 4 },
+    { x: -1, y: -3 },
+    { x: 3, y: -3 },
+    { x: 0, y: 6 },
+    { x: -3, y: 0 },
+    { x: 2, y: 5 },
+    { x: 4, y: -2 },
+    { x: -3, y: 1 },
+    { x: 2, y: 1 },
+    { x: -1, y: 2 },
+    { x: 0, y: 0 },
+    { x: 4, y: 4 },
+  ],
+  probes: [
+    { id: "outside-right", x: 6, y: 3 },
+    { id: "inside-origin", x: 0, y: 0 },
+    { id: "boundary-lower", x: 1, y: -3 },
+    { id: "outside-lower", x: 1, y: -4 },
+    { id: "boundary-slant", x: 2, y: 5 },
+    { id: "vertex-left", x: -3, y: 0 },
+    { id: "inside-near-edge", x: -2, y: -1 },
   ],
 };
 
@@ -103,28 +136,43 @@ function inventoryExpected(input) {
 
 const SUMMARY_EXPECTED = summaryExpected(SUMMARY_INPUT);
 const INVENTORY_EXPECTED = inventoryExpected(INVENTORY_INPUT);
-const POLYNOMIAL_EXPECTED = {
-  product: [-4, 6, 0, -7, 6, 3],
-  derivative: [6, 0, -21, 24, 15],
-  evaluations: [
-    { x: -1, value: 0 },
-    { x: 0, value: -4 },
-    { x: 2, value: 144 },
+const ROUTE_MAP_EXPECTED = {
+  start: "A",
+  routes: [
+    { node: "A", distance: 0, hops: 0, path: ["A"] },
+    { node: "B", distance: 4, hops: 1, path: ["A", "B"] },
+    { node: "C", distance: 1, hops: 1, path: ["A", "C"] },
+    { node: "D", distance: 4, hops: 2, path: ["A", "B", "D"] },
+    { node: "E", distance: 6, hops: 2, path: ["A", "B", "E"] },
+    { node: "F", distance: 6, hops: 2, path: ["A", "C", "F"] },
+    { node: "G", distance: null, hops: null, path: [] },
+    { node: "H", distance: null, hops: null, path: [] },
   ],
-  degree: 5,
+  reachableCount: 6,
+  unreachable: ["G", "H"],
 };
 
-const PIXEL_MAP_EXPECTED = {
-  dimensions: { height: 8, width: 9 },
-  regions: [
-    { anchor: { row: 0, column: 4 }, bounds: { top: 0, left: 4, bottom: 2, right: 6 }, cells: 8, perimeter: 16 },
-    { anchor: { row: 4, column: 0 }, bounds: { top: 4, left: 0, bottom: 5, right: 1 }, cells: 4, perimeter: 8 },
-    { anchor: { row: 4, column: 4 }, bounds: { top: 4, left: 4, bottom: 6, right: 5 }, cells: 4, perimeter: 10 },
-    { anchor: { row: 6, column: 7 }, bounds: { top: 6, left: 7, bottom: 7, right: 8 }, cells: 3, perimeter: 8 },
-    { anchor: { row: 0, column: 0 }, bounds: { top: 0, left: 0, bottom: 0, right: 0 }, cells: 1, perimeter: 4 },
-    { anchor: { row: 1, column: 1 }, bounds: { top: 1, left: 1, bottom: 1, right: 1 }, cells: 1, perimeter: 4 },
+const POINT_CLOUD_EXPECTED = {
+  hull: [
+    { x: -3, y: 0 },
+    { x: -1, y: -3 },
+    { x: 3, y: -3 },
+    { x: 6, y: 0 },
+    { x: 4, y: 4 },
+    { x: 0, y: 6 },
+    { x: -3, y: 3 },
   ],
-  totals: { regions: 6, filledCells: 21, perimeter: 50 },
+  areaTwice: 114,
+  probes: [
+    { id: "boundary-lower", position: "boundary" },
+    { id: "boundary-slant", position: "boundary" },
+    { id: "inside-near-edge", position: "inside" },
+    { id: "inside-origin", position: "inside" },
+    { id: "outside-lower", position: "outside" },
+    { id: "outside-right", position: "outside" },
+    { id: "vertex-left", position: "boundary" },
+  ],
+  pointCounts: { input: 16, unique: 14, hullVertices: 7 },
 };
 
 const SUMMARY_EVALUATOR = `import assert from "node:assert/strict";
@@ -171,118 +219,169 @@ assert.deepEqual(actual, expected);
 console.log("inventory fixture passed");
 `;
 
-const POLYNOMIAL_EVALUATOR = `import assert from "node:assert/strict";
+const ROUTE_MAP_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const input = JSON.parse(readFileSync("polynomial-job.json", "utf8"));
-const actual = JSON.parse(readFileSync("polynomial-result.json", "utf8"));
+const input = JSON.parse(readFileSync("route-map.json", "utf8"));
+const actual = JSON.parse(readFileSync("route-report.json", "utf8"));
 assert.ok(input && typeof input === "object" && !Array.isArray(input));
-assert.deepEqual(Object.keys(input).sort(), ["left", "points", "right"]);
-const assertCoefficients = coefficients => {
-  assert.ok(Array.isArray(coefficients) && coefficients.length > 0);
-  assert.ok(coefficients.every(Number.isSafeInteger));
-  assert.notEqual(coefficients.at(-1), 0);
+assert.deepEqual(Object.keys(input).sort(), ["edges", "nodes", "start"]);
+assert.ok(Array.isArray(input.nodes) && input.nodes.length > 0);
+assert.ok(input.nodes.every(node => typeof node === "string" && /^[A-Z]$/u.test(node)));
+assert.equal(new Set(input.nodes).size, input.nodes.length);
+assert.ok(input.nodes.includes(input.start));
+assert.ok(Array.isArray(input.edges));
+const nodeSet = new Set(input.nodes);
+const edgeSet = new Set();
+for (const edge of input.edges) {
+  assert.ok(edge && typeof edge === "object" && !Array.isArray(edge));
+  assert.deepEqual(Object.keys(edge).sort(), ["cost", "from", "to"]);
+  assert.ok(nodeSet.has(edge.from) && nodeSet.has(edge.to));
+  assert.ok(Number.isSafeInteger(edge.cost) && edge.cost >= 0);
+  const edgeKey = edge.from + ">" + edge.to;
+  assert.equal(edgeSet.has(edgeKey), false);
+  edgeSet.add(edgeKey);
+}
+const compareText = (left, right) => left.localeCompare(right, "en");
+const compareNumber = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+const comparePath = (left, right) => {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    const comparison = compareText(left[index], right[index]);
+    if (comparison !== 0) return comparison;
+  }
+  return compareNumber(left.length, right.length);
 };
-assertCoefficients(input.left);
-assertCoefficients(input.right);
-assert.ok(Array.isArray(input.points) && input.points.length > 0);
-assert.ok(input.points.every(Number.isSafeInteger));
-assert.equal(new Set(input.points).size, input.points.length);
-const product = Array(input.left.length + input.right.length - 1).fill(0);
-for (let leftPower = 0; leftPower < input.left.length; leftPower += 1) {
-  for (let rightPower = 0; rightPower < input.right.length; rightPower += 1) {
-    const power = leftPower + rightPower;
-    product[power] += input.left[leftPower] * input.right[rightPower];
-    assert.ok(Number.isSafeInteger(product[power]));
+const compareRoute = (left, right) =>
+  compareNumber(left.distance, right.distance)
+  || compareNumber(left.hops, right.hops)
+  || comparePath(left.path, right.path);
+const initial = { distance: 0, hops: 0, path: [input.start] };
+const best = new Map([[input.start, initial]]);
+const pending = [{ node: input.start, ...initial }];
+while (pending.length > 0) {
+  pending.sort((left, right) => compareRoute(left, right) || compareText(left.node, right.node));
+  const current = pending.shift();
+  if (compareRoute(current, best.get(current.node)) !== 0) continue;
+  for (const edge of input.edges) {
+    if (edge.from !== current.node) continue;
+    const candidate = {
+      distance: current.distance + edge.cost,
+      hops: current.hops + 1,
+      path: [...current.path, edge.to],
+    };
+    assert.ok(Number.isSafeInteger(candidate.distance));
+    const previous = best.get(edge.to);
+    if (previous === undefined || compareRoute(candidate, previous) < 0) {
+      best.set(edge.to, candidate);
+      pending.push({ node: edge.to, ...candidate });
+    }
   }
 }
-const derivative = product.slice(1).map((coefficient, power) => {
-  const value = coefficient * (power + 1);
-  assert.ok(Number.isSafeInteger(value));
-  return value;
+const orderedNodes = [...input.nodes].sort(compareText);
+const routes = orderedNodes.map(node => {
+  const route = best.get(node);
+  return route === undefined
+    ? { node, distance: null, hops: null, path: [] }
+    : { node, distance: route.distance, hops: route.hops, path: route.path };
 });
-const evaluate = (coefficients, x) => {
-  let value = 0;
-  for (let power = coefficients.length - 1; power >= 0; power -= 1) {
-    value = value * x + coefficients[power];
-    assert.ok(Number.isSafeInteger(value));
-  }
-  return value;
+const unreachable = routes.filter(route => route.distance === null).map(route => route.node);
+const expected = {
+  start: input.start,
+  routes,
+  reachableCount: routes.length - unreachable.length,
+  unreachable,
 };
-const evaluations = [...input.points].sort((left, right) => left - right)
-  .map(x => ({ x, value: evaluate(product, x) }));
-const expected = { product, derivative, evaluations, degree: product.length - 1 };
 assert.deepEqual(actual, expected);
-console.log("polynomial fixture passed");
+console.log("route map fixture passed");
 `;
 
-const PIXEL_MAP_EVALUATOR = `import assert from "node:assert/strict";
+const POINT_CLOUD_EVALUATOR = `import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const input = JSON.parse(readFileSync("pixel-map.json", "utf8"));
-const actual = JSON.parse(readFileSync("region-report.json", "utf8"));
+const input = JSON.parse(readFileSync("point-cloud.json", "utf8"));
+const actual = JSON.parse(readFileSync("hull-report.json", "utf8"));
 assert.ok(input && typeof input === "object" && !Array.isArray(input));
-assert.deepEqual(Object.keys(input), ["rows"]);
-assert.ok(Array.isArray(input.rows) && input.rows.length > 0);
-const width = input.rows[0].length;
-assert.ok(width > 0);
-for (const row of input.rows) {
-  assert.equal(typeof row, "string");
-  assert.equal(row.length, width);
-  assert.match(row, /^[.#]+$/u);
+assert.deepEqual(Object.keys(input).sort(), ["points", "probes"]);
+assert.ok(Array.isArray(input.points) && input.points.length >= 3);
+assert.ok(Array.isArray(input.probes) && input.probes.length > 0);
+const assertPoint = point => {
+  assert.ok(point && typeof point === "object" && !Array.isArray(point));
+  assert.deepEqual(Object.keys(point).sort(), ["x", "y"]);
+  assert.ok(Number.isSafeInteger(point.x) && Number.isSafeInteger(point.y));
+};
+for (const point of input.points) assertPoint(point);
+const probeIds = new Set();
+for (const probe of input.probes) {
+  assert.ok(probe && typeof probe === "object" && !Array.isArray(probe));
+  assert.deepEqual(Object.keys(probe).sort(), ["id", "x", "y"]);
+  assert.ok(typeof probe.id === "string" && probe.id.length > 0);
+  assert.equal(probeIds.has(probe.id), false);
+  probeIds.add(probe.id);
+  assert.ok(Number.isSafeInteger(probe.x) && Number.isSafeInteger(probe.y));
 }
-const height = input.rows.length;
-const directions = [[-1, 0], [0, -1], [0, 1], [1, 0]];
-const seen = new Set();
-const keyFor = (row, column) => row + "," + column;
-const regions = [];
-for (let row = 0; row < height; row += 1) {
-  for (let column = 0; column < width; column += 1) {
-    const startKey = keyFor(row, column);
-    if (input.rows[row][column] !== "#" || seen.has(startKey)) continue;
-    const queue = [[row, column]];
-    seen.add(startKey);
-    let cursor = 0;
-    let cells = 0;
-    let perimeter = 0;
-    const bounds = { top: row, left: column, bottom: row, right: column };
-    while (cursor < queue.length) {
-      const [currentRow, currentColumn] = queue[cursor];
-      cursor += 1;
-      cells += 1;
-      bounds.top = Math.min(bounds.top, currentRow);
-      bounds.left = Math.min(bounds.left, currentColumn);
-      bounds.bottom = Math.max(bounds.bottom, currentRow);
-      bounds.right = Math.max(bounds.right, currentColumn);
-      for (const [rowDelta, columnDelta] of directions) {
-        const nextRow = currentRow + rowDelta;
-        const nextColumn = currentColumn + columnDelta;
-        if (nextRow < 0 || nextRow >= height || nextColumn < 0 || nextColumn >= width || input.rows[nextRow][nextColumn] === ".") {
-          perimeter += 1;
-          continue;
-        }
-        const nextKey = keyFor(nextRow, nextColumn);
-        if (!seen.has(nextKey)) {
-          seen.add(nextKey);
-          queue.push([nextRow, nextColumn]);
-        }
-      }
-    }
-    regions.push({ anchor: { row, column }, bounds, cells, perimeter });
+const compareText = (left, right) => left.localeCompare(right, "en");
+const comparePoint = (left, right) => left.x < right.x ? -1 : left.x > right.x ? 1 : left.y < right.y ? -1 : left.y > right.y ? 1 : 0;
+const uniqueByCoordinate = new Map();
+for (const point of input.points) uniqueByCoordinate.set(point.x + "," + point.y, point);
+const points = [...uniqueByCoordinate.values()].sort(comparePoint);
+assert.ok(points.length >= 3);
+const cross = (origin, left, right) => {
+  const value = (left.x - origin.x) * (right.y - origin.y) - (left.y - origin.y) * (right.x - origin.x);
+  assert.ok(Number.isSafeInteger(value));
+  return value;
+};
+const lower = [];
+for (const point of points) {
+  while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), point) <= 0) lower.pop();
+  lower.push(point);
+}
+const upper = [];
+for (let index = points.length - 1; index >= 0; index -= 1) {
+  const point = points[index];
+  while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop();
+  upper.push(point);
+}
+const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+assert.ok(hull.length >= 3);
+let areaTwice = 0;
+for (let index = 0; index < hull.length; index += 1) {
+  const next = hull[(index + 1) % hull.length];
+  const term = hull[index].x * next.y - hull[index].y * next.x;
+  assert.ok(Number.isSafeInteger(term));
+  areaTwice += term;
+  assert.ok(Number.isSafeInteger(areaTwice));
+}
+assert.ok(areaTwice > 0);
+const onSegment = (point, start, end) =>
+  cross(start, end, point) === 0
+  && point.x >= Math.min(start.x, end.x)
+  && point.x <= Math.max(start.x, end.x)
+  && point.y >= Math.min(start.y, end.y)
+  && point.y <= Math.max(start.y, end.y);
+const classify = point => {
+  for (let index = 0; index < hull.length; index += 1) {
+    if (onSegment(point, hull[index], hull[(index + 1) % hull.length])) return "boundary";
   }
-}
-regions.sort((left, right) => right.cells - left.cells || left.anchor.row - right.anchor.row || left.anchor.column - right.anchor.column);
+  for (let index = 0; index < hull.length; index += 1) {
+    if (cross(hull[index], hull[(index + 1) % hull.length], point) < 0) return "outside";
+  }
+  return "inside";
+};
+const probes = [...input.probes]
+  .sort((left, right) => compareText(left.id, right.id))
+  .map(probe => ({ id: probe.id, position: classify(probe) }));
 const expected = {
-  dimensions: { height, width },
-  regions,
-  totals: {
-    regions: regions.length,
-    filledCells: regions.reduce((sum, region) => sum + region.cells, 0),
-    perimeter: regions.reduce((sum, region) => sum + region.perimeter, 0),
+  hull,
+  areaTwice,
+  probes,
+  pointCounts: {
+    input: input.points.length,
+    unique: points.length,
+    hullVertices: hull.length,
   },
 };
 assert.deepEqual(actual, expected);
-console.log("pixel map fixture passed");
+console.log("point cloud fixture passed");
 `;
 
 const PLAN_INPUT = [
@@ -385,45 +484,45 @@ const FIXTURES = {
     goalPolicy: { requiredPaths: ["inventory.json", "inventory-report.json"], format: "json" },
     expectedOutput: INVENTORY_EXPECTED,
   },
-  "execute-fresh-021a-heldout": {
-    name: "execute-fresh-021a-heldout",
-    description: "Fresh C21 held-out guarded execution multiplies integer polynomials, differentiates the product, and evaluates fixed points.",
+  "execute-fresh-023a-heldout": {
+    name: "execute-fresh-023a-heldout",
+    description: "Fresh C23 held-out guarded execution computes deterministic best routes in a directed weighted graph.",
     kind: "execute",
     heldOut: true,
     files: {
-      "polynomial-job.json": jsonFile(POLYNOMIAL_INPUT),
-      "evaluator.mjs": POLYNOMIAL_EVALUATOR,
+      "route-map.json": jsonFile(ROUTE_MAP_INPUT),
+      "evaluator.mjs": ROUTE_MAP_EVALUATOR,
     },
-    outputPaths: ["polynomial-result.json"],
-    allowedReadPaths: ["polynomial-job.json", "evaluator.mjs"],
+    outputPaths: ["route-report.json"],
+    allowedReadPaths: ["route-map.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read polynomial-job.json and, only after exact goal confirmation, full reviewed planning, and approval, create polynomial-result.json as strict JSON. The immutable input is an object with exactly left, right, and points. left and right are nonempty arrays of safe integer coefficients in ascending power order, each ending in a nonzero coefficient. points is a nonempty duplicate-free array of safe integers, and all specified calculations remain safe integers. Multiply left and right by discrete convolution: the product coefficient at power k is the sum of left[i] times right[k - i] over valid indices. Preserve every coefficient position, including zeros, so product has left.length + right.length - 1 entries. derivative contains the product's derivative coefficients in ascending power order: entry p is (p + 1) times product[p + 1], again preserving zeros. Evaluate the product at every input point and put entries with exactly x and value in evaluations sorted by ascending x. The result has exactly product, derivative, evaluations, and degree, where degree is product.length - 1. The objective local acceptance command is exactly `node evaluator.mjs`. polynomial-job.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of polynomial-result.json, and at most that exact evaluator command. No installs, other commands, network, publishing, credentials, deletion, or system mutation.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read route-map.json and, only after exact goal confirmation, full reviewed planning, and approval, create route-report.json as strict JSON. The immutable input is an object with exactly start, nodes, and edges. nodes is a nonempty duplicate-free array of one-letter uppercase ASCII identifiers, and start is one of those identifiers. edges is an array of unique directed pairs with exactly from, to, and cost; every endpoint is in nodes, every cost is a nonnegative safe integer, and all route totals remain safe integers. A route follows directed edges. Rank routes first by smaller total cost, then fewer edges, then lexicographically smaller complete identifier sequence; path includes both start and destination. The result has exactly start, routes, reachableCount, and unreachable. start repeats the input start. routes has one entry per node sorted by ascending identifier. A reachable entry has exactly node, distance, hops, and path. An unreachable entry has the same exact fields with distance and hops null and path empty. reachableCount counts reachable nodes including start, and unreachable lists unreachable identifiers sorted ascending. The objective local acceptance command is exactly `node evaluator.mjs`. route-map.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of route-report.json, and at most that exact evaluator command. No installs, other commands, generated code, extra files, web or network access, publishing, credentials, deletion, human or rubric acceptance, or system mutation.",
     answers: [
-      "All material decisions are fixed: coefficient arrays use ascending powers; multiplication uses exact discrete convolution; zero coefficients remain in position; differentiation multiplies product[p + 1] by p + 1; evaluations use the product and sort by numeric x; every declared field is exact; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
-      "There are no additional user choices. Keep polynomial-job.json and evaluator.mjs immutable and polynomial-result.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
+      "All material decisions are fixed: edges are directed; zero costs are valid; route ranking applies total cost, then edge count, then the complete identifier sequence; paths include both endpoints; every node appears exactly once; unreachable values and all ordering rules are exact; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep route-map.json and evaluator.mjs immutable and route-report.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
     ],
-    goalPolicy: { requiredPaths: ["polynomial-job.json", "polynomial-result.json"], format: "json" },
-    expectedOutput: POLYNOMIAL_EXPECTED,
+    goalPolicy: { requiredPaths: ["route-map.json", "route-report.json"], format: "json" },
+    expectedOutput: ROUTE_MAP_EXPECTED,
   },
-  "execute-fresh-021b-heldout": {
-    name: "execute-fresh-021b-heldout",
-    description: "Fresh C21 held-out guarded execution measures four-neighbor filled regions, inclusive bounds, and exposed perimeter.",
+  "execute-fresh-023b-heldout": {
+    name: "execute-fresh-023b-heldout",
+    description: "Fresh C23 held-out guarded execution derives an exact integer convex hull and classifies probe points.",
     kind: "execute",
     heldOut: true,
     files: {
-      "pixel-map.json": jsonFile(PIXEL_MAP_INPUT),
-      "evaluator.mjs": PIXEL_MAP_EVALUATOR,
+      "point-cloud.json": jsonFile(POINT_CLOUD_INPUT),
+      "evaluator.mjs": POINT_CLOUD_EVALUATOR,
     },
-    outputPaths: ["region-report.json"],
-    allowedReadPaths: ["pixel-map.json", "evaluator.mjs"],
+    outputPaths: ["hull-report.json"],
+    allowedReadPaths: ["point-cloud.json", "evaluator.mjs"],
     evaluatorCommand: "node evaluator.mjs",
-    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read pixel-map.json and, only after exact goal confirmation, full reviewed planning, and approval, create region-report.json as strict JSON. The immutable input is an object with exactly rows: a nonempty array of equal-length nonempty strings containing only . and #. A # cell belongs to the same region as another # cell only through shared horizontal or vertical sides; diagonal contact does not connect regions. Coordinates are zero-based. For each region, cells is its filled-cell count; perimeter is the number of cell sides whose neighbor is outside the grid or a . cell; anchor is its topmost filled row and then the leftmost filled column on that row; and bounds has inclusive top, left, bottom, and right coordinates. Do not fill holes. The result has exactly dimensions, regions, and totals. dimensions has exactly height and width. regions has one entry per region with exactly anchor, bounds, cells, and perimeter, sorted by descending cells and then ascending anchor row and anchor column. anchor has exactly row and column. totals has exactly regions, filledCells, and perimeter, summing across all regions. The objective local acceptance command is exactly `node evaluator.mjs`. pixel-map.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of region-report.json, and at most that exact evaluator command. No installs, other commands, network, publishing, credentials, deletion, or system mutation.",
+    initialPrompt: "/skill:solar-interview This is an explicitly bounded synthetic held-out software fixture. Read point-cloud.json and, only after exact goal confirmation, full reviewed planning, and approval, create hull-report.json as strict JSON. The immutable input is an object with exactly points and probes. points is an array of objects with exactly safe-integer x and y; duplicate coordinates may occur, there are at least three distinct non-collinear coordinates, and all specified calculations remain safe integers. probes is a nonempty array of objects with exactly unique string id and safe-integer x and y. Deduplicate point coordinates before constructing the convex hull. hull contains only the extreme vertices: omit duplicate coordinates and collinear points lying between edge endpoints. Start hull at the vertex with lowest x and then lowest y, and list vertices counterclockwise. areaTwice is the positive integer doubled polygon area from that hull. Classify each probe as boundary when it lies on a hull edge or vertex, inside when strictly enclosed, and outside otherwise. The result has exactly hull, areaTwice, probes, and pointCounts. hull entries have exactly x and y. probes entries have exactly id and position, sorted by ascending id. pointCounts has exactly input, unique, and hullVertices. The objective local acceptance command is exactly `node evaluator.mjs`. point-cloud.json and evaluator.mjs are immutable. Authority may cover only read of those files, write/edit of hull-report.json, and at most that exact evaluator command. No installs, other commands, generated code, extra files, web or network access, publishing, credentials, deletion, human or rubric acceptance, or system mutation.",
     answers: [
-      "All material decisions are fixed: only horizontal and vertical sides connect cells; diagonal contact stays separate; coordinates are zero-based; bounds are inclusive; grid edges and holes contribute exposed perimeter; region ordering and every exact field are required; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
-      "There are no additional user choices. Keep pixel-map.json and evaluator.mjs immutable and region-report.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
+      "All material decisions are fixed: coordinate duplicates collapse before hull construction; collinear edge points are omitted from hull vertices; the start vertex, counterclockwise orientation, doubled area, boundary rule, probe ordering, count fields, and every declared field are exact; and only `node evaluator.mjs` determines objective success. No qualitative acceptance or wider authority is granted.",
+      "There are no additional user choices. Keep point-cloud.json and evaluator.mjs immutable and hull-report.json as the sole mutable strict JSON output. Do not add artifacts, capabilities, commands, generated code, extra files, web access, installs, or a human rubric.",
     ],
-    goalPolicy: { requiredPaths: ["pixel-map.json", "region-report.json"], format: "json" },
-    expectedOutput: PIXEL_MAP_EXPECTED,
+    goalPolicy: { requiredPaths: ["point-cloud.json", "hull-report.json"], format: "json" },
+    expectedOutput: POINT_CLOUD_EXPECTED,
   },
 };
 
