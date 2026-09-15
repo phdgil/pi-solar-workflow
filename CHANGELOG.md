@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Clarified the executor's verbatim relative file paths and current-step inspection capabilities without changing authority or verification. Live behavioral benefit remains a development hypothesis.
 - Separated fixture-policy allowance from native host-tool authority evidence. Pi-owned call/state/result receipts now support fail-closed coverage auditing without granting permission or changing guards, budgets or completion. Legacy fixture-only results remain unchanged; incomplete evidence cannot establish zero denials.
 - Made the synthetic execute request explicitly disclose the existing goal-sentence path requirement. Confirmation predicates, data, oracles and permissions remain unchanged; this is a protocol-clarity experiment, not a demonstrated live reliability improvement.
 - Preserved blocked finding obligations through resume and later plan revisions, and moved reviewer semantic checks inside existing bounded repairs. Repair diagnostics and complete prompts now respect UTF-8 limits while retaining original evidence. Exact-session protection takes precedence over the research exception; stopped workflows stay dormant across workspace changes.

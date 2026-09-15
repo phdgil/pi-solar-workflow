@@ -278,3 +278,11 @@ Goal predicate 수락은 2/3 대 3/3이지만 종합 통과는 양쪽 모두 0/3
 부모 프로세스 검증 결과는 **322/322 deterministic tests**와 **installed-Pi loopback 통과**다. 실제 SDK에서 정상 실행 17/17, fixture 정책에는 맞지만 현재 step이 거절하는 output read, 그리고 권한 recheck는 통과한 일반 read 오류를 구분했다. 일반 오류 시나리오도 원래 `isError`를 보존하면서 17/17을 통과했다. Native 기록의 실제 origin·순서·leaf와 모델 문맥 비노출도 검사했다. 이는 실제 Solar 품질이나 새 heldout 수렴의 증거가 아니다.
 
 초기 union 검사에서 남은 옛 test 입력 한 건과, negative loopback이 기존 한 번의 checkpoint reminder 및 `blocked/paused` 분류를 잘못 예상한 실패를 보존했다. Test 가정을 고쳤으며 runtime의 재시도나 분류를 완화하지 않았다. 전체 `runOne`의 최종 수집 실패를 직접 주입하는 통합 검사는 아직 없고, 해당 경계는 RPC 검증 및 명시적인 불완전 수집 입력 검사로 한정한다. 과거 C17/C18 판정은 그대로 두며 새 source/protocol 검증 횟수는 다시 시작한다.
+
+C19는 `d9d3965dd01d184ad6335d33a376eb8482584213`의 26개 파일과 일치하게 동결했다. Source는 `81e2ecb8503e2d24b57afc4273ea2ddfe2e27000992c0ba3736001eef6eb8f40`, protocol은 `de3d48034536cdf4503448614b3a62b155082bef3020162871900b673c98a723`이다. 실제 Solar의 개발용 research 한 건은 **12/12, 10837 ms**, native coverage complete, 거절·무효화 0건을 기록했다. 단일 research 관측이며 실행·전체 회차·새 heldout 수렴을 뜻하지 않는다.
+
+### C20: executor 경로·검사 권한 설명 가설
+
+Executor 절차 두 곳만 명확히 했다. File-tool 경로는 선언한 workspace-relative/forward-slash 문자열 그대로 사용하며 absolute/drive/ADS 표기를 사용하지 않는다. Output 또는 command의 paths 목록은 별도 read 권한이 아니므로 결과 검사는 현재 step의 정확한 read/command capability 안에서만 수행한다. Guard, 승인, checkpoint, 예산, 다른 역할과 fixture·요청·grader는 그대로다.
+
+322/322 검사와 installed-Pi loopback을 통과했고, 동결 C19 대비 바뀐 product 파일이 executor skill 하나이며 protocol이 같음을 확인했다. 문구가 실제 모델 준수를 개선한다는 증거는 아직 아니다. 개발용 inventory의 C19/C20 세 쌍 교대 순서와 **기존 17개 assertion의 종합 통과**를 주 지표로 사전등록했으며, 승인 관측·native coverage·거절·완료·시간은 구분한다. 실측 중 tuning이나 과거 성공 이월은 하지 않으며 최종 tuning 뒤 새 heldout이 필요하다.
