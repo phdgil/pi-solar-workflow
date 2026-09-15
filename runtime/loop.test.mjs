@@ -606,6 +606,11 @@ test("native free-form strings avoid substring grammars while host nonblank guar
     assert.equal(Object.hasOwn(schema.$defs[name], "pattern"), false);
     assert.equal(schema.$defs[name].minLength, 1);
   }
+  const resolutionExplanation = schema.$defs.resolution.properties.explanation;
+  assert.equal(Object.hasOwn(resolutionExplanation, "pattern"), false);
+  assert.equal(resolutionExplanation.type, "string");
+  assert.equal(resolutionExplanation.minLength, 1);
+  assert.equal(resolutionExplanation.maxLength, 4_000);
   assert.equal(schema.$defs.identifier.pattern, EXECUTION_CONTRACT_ID_PATTERN);
   const contract = contractFixture(1);
   for (const [key] of PLANNER_SECTION_HEADINGS) {
@@ -619,6 +624,33 @@ test("native free-form strings avoid substring grammars while host nonblank guar
   assert.throws(() => decodePlannerOutput(plannerOutput(blankPath), {}), /Supply/);
   const decoded = decodePlannerOutput(plannerOutput(contract), {});
   assert.equal(decoded.contract.artifacts[0].path, contract.artifacts[0].path);
+
+  const revisedContract = structuredClone(contract);
+  revisedContract.steps[0].actions[0] = "Write, inspect, and preserve outcome 1.";
+  const workflow = {
+    revision: digest(decoded.planMarkdown),
+    planning: {
+      reviewFindings: [{
+        id: "F1",
+        severity: "material",
+        summary: "The producing action needs clarification.",
+        requiredChange: "Clarify the producing action.",
+        planLocations: ["steps.STEP1.actions"],
+      }],
+    },
+  };
+  const resolution = {
+    findingId: "F1",
+    status: "resolved",
+    changedLocations: ["steps.STEP1.actions"],
+    explanation: "Clarified the producing action while preserving the exact finding binding.",
+  };
+  assert.throws(
+    () => decodePlannerOutput(plannerOutput(revisedContract, [{ ...resolution, explanation: " \t\n " }]), workflow),
+    /Supply F1 resolution explanation/,
+  );
+  const revised = decodePlannerOutput(plannerOutput(revisedContract, [resolution]), workflow);
+  assert.equal(revised.resolutions[0].explanation, resolution.explanation);
 });
 
 test("Planner decoder rejects old envelopes, section injection, invalid step prose, and invalid V3 contracts", async t => {

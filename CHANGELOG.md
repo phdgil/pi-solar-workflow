@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed the remaining native substring constraint on resolution explanations after a matched Solar probe reproduced one-character output; host nonblank and semantic checks remain unchanged. Clarified independent interview gap coverage without discarding typed contradictions, backed by persistence and rejection tests.
 - Clarified the executor's verbatim relative file paths and current-step inspection capabilities without changing authority or verification. Live behavioral benefit remains a development hypothesis.
 - Separated fixture-policy allowance from native host-tool authority evidence. Pi-owned call/state/result receipts now support fail-closed coverage auditing without granting permission or changing guards, budgets or completion. Legacy fixture-only results remain unchanged; incomplete evidence cannot establish zero denials.
 - Made the synthetic execute request explicitly disclose the existing goal-sentence path requirement. Confirmation predicates, data, oracles and permissions remain unchanged; this is a protocol-clarity experiment, not a demonstrated live reliability improvement.

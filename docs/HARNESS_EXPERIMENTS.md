@@ -309,3 +309,31 @@ C20 source `50f6deab52365c63e2b1edde9b62456b755c1acb9372d2167e0e3b2d9ba74623`은
 C20 product tuning 종료 후 두 새 opaque heldout을 별도 작성하고, 다른 reviewer가 기대 결과와 evaluator·edge handling을 독립적으로 검토했다. 제한된 정적 판정은 CLEAR이며 실측 성공 증거가 아니다. Reviewer의 generic-symbol 탐색에서 일부 폐기된 사례 경계 문맥이 보였으므로 완벽한 설계 독립성은 주장하지 않는다. 부모는 새 payload·정답·알고리즘을 열람하지 않고 metadata/hash 및 개발 사례만 비교했다.
 
 Product와 다섯 개발 fixture, generic 요청·승인·grader는 그대로이며 driver 변경도 opaque 사례명 교체뿐임을 확인했다. 새 protocol은 `dfc6b0a4d471ca7db4b113979154ae39e7687038c900b6592c0cbfa0dc221f27`이다. 322/322 검사, installed-Pi의 기존 17개 assertion 및 native 거절/일반 오류 시나리오, 37개 package 파일과 private-tree 제외, whitespace 검사를 통과했다. 전체 로그는 보존하고 부모에게 payload가 노출되지 않도록 aggregate gate 결과만 표시했다. 이전 성공 횟수는 이월하지 않으며 일곱 사례·세 회차의 무수정 검증 기준을 유지한다.
+
+`7f390a9b5b2fbf702302d19e0dbb908b70680640`의 26개 파일을 동결하여 세 회차를 마쳤다. Product source는 C20과 같다. 사용자 확인 동안 19건 뒤 안전 경계에서 잠시 멈췄고, 재개 지시에 따라 나머지 두 건만 실행했다. 기존 결과를 재실행·덮어쓰기하거나 deadline을 연장하지 않았다.
+
+| 사례 | 1회 | 2회 | 3회 |
+|---|---|---|---|
+| research-local | 통과 12/12 · 6523 | 통과 12/12 · 12060 | 통과 12/12 · 15562 |
+| interview-correction | 실패 11/13 · 179440 | 통과 13/13 · 144991 | 통과 13/13 · 126824 |
+| plan-software | 실패 10/13 · 1185200 | 실패 9/13 · 602543 | 실패 12/13 · 899122 |
+| execute-summary | 실패 12/17 · 993654 | 실패 16/17 · 669067 | 실패 15/17 · 988195 |
+| inventory (개발) | 실패 12/17 · 346162 | 실패 12/17 · 991140 | 실패 11/17 · 434956 |
+| execute-fresh-021a-heldout | 차단 12/17 · 341276 | 실패 11/17 · 1200292 | 실패 11/17 · 710909 |
+| execute-fresh-021b-heldout | 실패 11/17 · 935379 | 실패 11/17 · 933759 | 실패 11/17 · 911953 |
+
+단위는 ms다. 최종 결과 21건은 **통과 5, 실패 15, 차단 1**, clean 회차는 **0**이다. 모두 complete native coverage, dispatch 거절·result 무효화 0건이지만 이것은 fixture 위반·control-body 오류·role timeout 부재를 뜻하지 않는다. Summary 2회차는 실제 승인과 독립 완료 검사를 통과했으나 role interruption 때문에 전체 실패다. 두 heldout은 소비됐으며 후속 tuning의 fresh 검증에 재사용하지 않는다.
+
+개발 사례 감사에서는 planning 1회차의 timeout 네 건이 모두 Approach Reviewer였고, 완료된 네 응답 중 host schema/semantic 거절은 없었음을 확인했다. Review가 요구한 revision과 SDK repair는 구분한다. Interview 1회차는 충돌을 처음 인식했지만 open material-gap coverage 오류를 고치는 동안 typed contradiction을 제거했다. 충돌 의미와 not-ready 상태는 유지됐어도 기존 typed-state assertion은 실패로 남는다. 뒤이은 workspace-root read도 fixture 위반이며 native 거절은 아니었다.
+
+이 개발 감사의 범위 제한 read가 도구 문제로 인접 fresh 정의까지 반환한 사고도 보존했다. 해당 reviewer는 더 이상 fresh-blind가 아니며 내용은 부모에게 재전송하거나 tuning에 사용하지 않았다. Matrix 도중 product/protocol 변경은 없었지만 완벽한 lane 격리를 주장하지 않는다.
+
+### C22: 남은 native 문자열 제약과 interview 표현 보정
+
+C21 개발 revision의 resolution explanation이 한 글자였고, native schema의 해당 필드에 C5에서 문제를 재현했던 `pattern: "\\S"`가 남아 있었다. Matrix 종료 후 정확한 동결 필드 schema를 복제한 tool-free Pi/Solar Pro4 Max 요청에서 동일 문장을 두 필드에 요구했다. Pattern 쪽은 `"2"`, pattern만 제거한 쪽은 요청한 전체 문장을 반환했다(2035 ms). 이는 해당 제약의 출력 축소 재현이며 별도 reviewer timeout의 원인이나 전체 계획 품질 개선을 증명하지 않는다.
+
+그 native pattern만 제거했다. String type, 1–4000 길이, finding ID 결속과 host의 공백·의미 검사는 유지한다. 새 회귀를 동결 C21의 별도 mirror에 적용하면 pattern 존재 assertion이 실패했고, 수정본에서는 공백 explanation 거절과 유효 explanation의 원문 보존까지 통과했다.
+
+Interview는 validator를 바꾸지 않았다. 이미 허용되는 별개의 material-gap/contradiction ID를 함께 저장·복구할 수 있고, gap coverage 누락과 unresolved 상태의 ready 선언은 계속 거절됨을 검증했다. 이에 맞춰 기존 ledger gap을 readiness에 포함하면서 typed contradiction도 남기라는 preflight 설명만 추가했다. 실제 모델의 repair 중 분류 손실이 줄어드는지는 별도 개발 가설이다.
+
+부모 검증은 **323/323**, installed-Pi의 기존 17개 assertion과 거절/일반 오류 시나리오, 37-file package/private 제외 및 whitespace 통과다. C21 결과는 유지하며 새 source/protocol의 성공 횟수는 다시 시작한다. 두 개발 과제의 세 쌍 비교는 종합 13/13을 주 지표로 사전등록했고, schema 진단이나 중간 상태만으로 성공을 대신하지 않는다.

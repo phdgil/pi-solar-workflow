@@ -271,7 +271,6 @@ export function buildPlannerResponseSchema(capabilityToolNames: readonly string[
             type: "string",
             minLength: 1,
             maxLength: 4_000,
-            pattern: "\\S",
           },
         },
       },

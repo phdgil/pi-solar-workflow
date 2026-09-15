@@ -186,6 +186,59 @@ test("normal readiness rejects blockers, contradictions, open gaps, and a pendin
   assert.throws(() => confirmInterview(current, answers, "answer-1", goalToken(current), { researchHead: null, reviewPending: true }), /review.*pending/i);
 });
 
+test("typed contradictions persist alongside independent material-gap coverage", () => {
+  const input = proposal();
+  input.question = "Which evaluation mode resolves the offline and cloud-only conflict?";
+  input.materialState.gaps[0] = {
+    gapId: "evaluation-mode",
+    status: "open",
+    normalizedSummary: "offline delivery conflicts with cloud-only evaluation",
+  };
+  input.currentGapId = "delivery-conflict";
+  input.readiness.materialGaps = [{
+    id: "evaluation-mode",
+    issue: "The conflicting evaluation mode remains unresolved.",
+    evidenceIds: ["answer-1"],
+    researchable: false,
+  }];
+  input.readiness.contradictions = [{
+    id: "delivery-conflict",
+    issue: "Offline delivery conflicts with cloud-only evaluation.",
+    evidenceIds: ["answer-1"],
+  }];
+
+  const state = assessInterview(input, undefined, answers, "answer-1");
+  assert.deepEqual(state.proposal.readiness.materialGaps, input.readiness.materialGaps);
+  assert.deepEqual(state.proposal.readiness.contradictions, input.readiness.contradictions);
+  assert.notEqual(state.proposal.readiness.materialGaps[0].id, state.proposal.readiness.contradictions[0].id);
+
+  const recovered = recoverInterview([
+    { type: "message", id: "answer-1", message: { role: "user", content: `<skill name="solar-interview">instructions</skill>\n${answers[0].text}` } },
+    { type: "custom", customType: INTERVIEW_STATE, data: state },
+  ]);
+  assert.deepEqual(recovered.state.proposal.readiness, state.proposal.readiness);
+  assert.deepEqual(recovered.state.proposal.readiness.materialGaps[0].evidenceIds, ["answer-1"]);
+  assert.deepEqual(recovered.state.proposal.readiness.contradictions[0].evidenceIds, ["answer-1"]);
+
+  const omittedCoverage = structuredClone(input);
+  omittedCoverage.readiness.materialGaps = [];
+  assert.throws(
+    () => assessInterview(omittedCoverage, undefined, answers, "answer-1"),
+    /Readiness omits current material gap evaluation-mode/,
+  );
+
+  const falselyReady = structuredClone(input);
+  falselyReady.question = "";
+  falselyReady.strategy = "ready";
+  delete falselyReady.currentGapId;
+  falselyReady.readiness.status = "ready";
+  falselyReady.readiness.goalSentence = "Build an offline exercise evaluated only through a cloud service.";
+  assert.throws(
+    () => assessInterview(falselyReady, undefined, answers, "answer-1"),
+    /Ready interviews cannot contain material gaps, contradictions, or blockers/,
+  );
+});
+
 test("new answers and research invalidate a recovered goal without deleting it", () => {
   const state = assessInterview(readyProposal(), undefined, answers, "answer-1", { researchHead: "research-r1" });
   const start = { type: "message", id: "answer-1", message: { role: "user", content: "/skill:solar-interview My goal" } };
