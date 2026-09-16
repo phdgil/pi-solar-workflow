@@ -382,3 +382,5 @@ C23 동결 commit은 `3da8584706360c0c0f419e64f93d4600f0903daf`, source는 C22�
 2026-09-16 07:13 UTC의 아홉 회차 checkpoint는 **63회 시도, 최종 결과 62건: 8 통과·49 실패·5 차단**, 외부 중단 1건이다. Native coverage는 59 complete·3 incomplete, 관측된 거절은 3건이며 전체 거절 총수는 여전히 미확정이다. 모든 최종 결과의 source/protocol·사례·assertion 수를 원본과 대조했다. Clean round 0으로 종료 기준을 충족하지 못했으며 기존 동결 조건으로 계속 검증 중이다.
 
 2026-09-16 11:22 UTC의 열두 회차 checkpoint는 **84회 시도, 최종 결과 83건: 10 통과·67 실패·6 차단**, 외부 중단 1건이다. Native coverage는 79 complete·4 incomplete, 관측된 거절은 4건이다. 회차 12 summary는 `RPC get_state timed out`와 불완전한 최종 capture를 기록했다. 이 결과의 거절 수나 전체 거절 총수를 추정하지 않는다. 원본의 source/protocol·사례·assertion 수를 다시 대조했고 clean round는 0이다.
+
+2026-09-16 15:01 UTC의 열다섯 회차 checkpoint는 **105회 시도, 최종 결과 104건: 14 통과·82 실패·8 차단**, 외부 중단 1건이다. Native coverage는 98 complete·6 incomplete, 관측된 거절은 5건이며 전체 거절 총수는 미확정이다. 원본의 source/protocol·사례·assertion 수 대조를 통과했지만 clean round는 0이며, 실제 계획·실행 신뢰성 향상이나 종료 자격은 입증되지 않았다.
