@@ -374,3 +374,7 @@ C23 동결 commit은 `3da8584706360c0c0f419e64f93d4600f0903daf`, source는 C22�
 | fresh-023b | 실패 11/17 · 1066497 | 실패 11/17 · 893870 | 실패 11/17 · 1200228 |
 
 단위는 ms다. **5 통과·15 실패·1 차단, clean round 0**이다. Native coverage는 20건 complete, 한 건 incomplete였다. Incomplete interview에서는 6개 call/result 중 dispatch receipt가 5개였고, 누락된 호출의 실제 결과는 `Tool solar_interview_round not found`였다. 관측된 거절은 전체에서 3건이지만 incomplete audit 때문에 전체 거절 총수를 확정하거나 0으로 취급하지 않는다. 첫 세 회차 사이 tuning은 없었으며 종료 기준은 충족되지 않았다.
+
+2026-09-16 03:23 UTC의 여섯 회차 checkpoint는 **42회 시도, 최종 결과 41건: 6 통과·31 실패·4 차단**, 별도 외부 중단 1건이다. Clean round는 여전히 0이다. 회차 4 interview는 재개 시 supervisor/해당 C23 프로세스와 최종 결과가 없었고 원인이 확인되지 않아 외부 중단으로 보존했다. 같은 output으로 재시도하지 않았고 provider 실패로 추정하지 않았다.
+
+41개 결과의 native coverage는 39 complete·2 incomplete다. 관측된 거절은 3건이며 전체 거절 총수는 미확정이다. 두 번째 incomplete인 회차 4 planning에는 `read`와 `bash`의 native `Tool … not found` 결과가 있지만 dispatch receipt가 없다. 한정된 독립 개발 감사는 구체적 producer/reader 결함을 입증하지 못했고, null 집계와 기존 실패를 유지하도록 결론냈다. source/protocol 변경이나 일반 Pi 설치 변경은 없었다.
