@@ -378,3 +378,5 @@ C23 동결 commit은 `3da8584706360c0c0f419e64f93d4600f0903daf`, source는 C22�
 2026-09-16 03:23 UTC의 여섯 회차 checkpoint는 **42회 시도, 최종 결과 41건: 6 통과·31 실패·4 차단**, 별도 외부 중단 1건이다. Clean round는 여전히 0이다. 회차 4 interview는 재개 시 supervisor/해당 C23 프로세스와 최종 결과가 없었고 원인이 확인되지 않아 외부 중단으로 보존했다. 같은 output으로 재시도하지 않았고 provider 실패로 추정하지 않았다.
 
 41개 결과의 native coverage는 39 complete·2 incomplete다. 관측된 거절은 3건이며 전체 거절 총수는 미확정이다. 두 번째 incomplete인 회차 4 planning에는 `read`와 `bash`의 native `Tool … not found` 결과가 있지만 dispatch receipt가 없다. 한정된 독립 개발 감사는 구체적 producer/reader 결함을 입증하지 못했고, null 집계와 기존 실패를 유지하도록 결론냈다. source/protocol 변경이나 일반 Pi 설치 변경은 없었다.
+
+2026-09-16 07:13 UTC의 아홉 회차 checkpoint는 **63회 시도, 최종 결과 62건: 8 통과·49 실패·5 차단**, 외부 중단 1건이다. Native coverage는 59 complete·3 incomplete, 관측된 거절은 3건이며 전체 거절 총수는 여전히 미확정이다. 모든 최종 결과의 source/protocol·사례·assertion 수를 원본과 대조했다. Clean round 0으로 종료 기준을 충족하지 못했으며 기존 동결 조건으로 계속 검증 중이다.
