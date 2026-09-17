@@ -388,3 +388,5 @@ C23 동결 commit은 `3da8584706360c0c0f419e64f93d4600f0903daf`, source는 C22�
 2026-09-16 18:37 UTC의 열여덟 회차 checkpoint는 **126회 시도, 최종 결과 125건: 19 통과·97 실패·9 차단**, 외부 중단 1건이다. Native coverage는 119 complete·6 incomplete, 관측된 거절은 7건이며 전체 거절 총수는 미확정이다. 같은 동결 source/protocol의 원본과 집계를 대조했으며 clean round는 0이다.
 
 2026-09-16 22:25 UTC의 스물한 회차 checkpoint는 **147회 시도, 최종 결과 146건: 24 통과·113 실패·9 차단**, 외부 중단 1건이다. Native coverage는 138 complete·8 incomplete, 관측된 거절은 7건이며 전체 거절 총수는 미확정이다. 원본의 source/protocol·사례·assertion 수를 대조했으며 clean round는 0이다. 반복 통과한 일부 연구·인터뷰 결과는 계획·실행 신뢰성이나 전체 종료 기준 충족을 대신하지 않는다.
+
+2026-09-17 02:23 UTC의 스물네 회차 checkpoint는 **168회 시도, 최종 결과 167건: 27 통과·130 실패·10 차단**, 외부 중단 1건이다. Native coverage는 157 complete·10 incomplete, 관측된 거절은 10건이며 전체 거절 총수는 미확정이다. 모든 최종 결과의 source/protocol·사례·assertion 수를 대조했고 clean round는 0이다. 원래 종료 시각과 동결 조건은 유지되며 일반 Pi 설치는 변경하지 않았다.
